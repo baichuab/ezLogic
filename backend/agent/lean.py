@@ -72,6 +72,7 @@ async def check_file(workspace: Workspace, path: str) -> LeanResult:
 
 _server = None
 _server_lock = threading.Lock()
+_run_lock = threading.Lock()  # the REPL handles one command at a time
 
 
 def _get_server():
@@ -90,6 +91,16 @@ def _get_server():
         return _server
 
 
+def run_command(command, timeout: float | None = None):
+    """Send a `lean_interact` command to the shared REPL. Blocking; calls are serialised.
+
+    Raises on REPL startup/build failures; returns the response or a `LeanError`.
+    """
+    server = _get_server()
+    with _run_lock:
+        return server.run(command, timeout=timeout or Config.LEAN_TIMEOUT)
+
+
 def _check_snippet_sync(code: str) -> LeanResult:
     from lean_interact import Command
     from lean_interact.interface import LeanError
@@ -97,8 +108,7 @@ def _check_snippet_sync(code: str) -> LeanResult:
     if not shutil.which(Config.LAKE_PATH):
         return LeanResult(ok=False, error=LEAN_MISSING)
     try:
-        server = _get_server()
-        response = server.run(Command(cmd=code), timeout=Config.LEAN_TIMEOUT)
+        response = run_command(Command(cmd=code))
     except Exception as e:  # REPL build/startup failures, timeouts, ...
         return LeanResult(ok=False, error=f"{type(e).__name__}: {e}")
 

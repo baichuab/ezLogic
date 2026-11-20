@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import graph as proof_graph
 from agent import AgentResult, ProofAgent, Workspace, WorkspaceError
 from agent import lean
 from config import Config
@@ -71,6 +72,10 @@ class SnippetRequest(BaseModel):
 
 class FileRequest(BaseModel):
     path: str
+
+
+class GraphRequest(BaseModel):
+    code: str  # Lean source
 
 
 def _user_id(request: Request) -> str:
@@ -198,6 +203,19 @@ async def verify_file(request: FileRequest):
         return (await lean.check_file(workspace, request.path)).to_dict()
     except WorkspaceError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/graph")
+async def create_graph(request: GraphRequest):
+    """Split a Lean source into a dependency graph of declarations, tactic steps and lemmas.
+
+    Nothing is stored; the graph is rebuilt on every call.
+    """
+    try:
+        graph = await proof_graph.create_graph(request.code)
+    except proof_graph.ExtractionError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return graph.to_dict()
 
 
 if __name__ == "__main__":
