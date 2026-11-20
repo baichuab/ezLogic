@@ -1,9 +1,12 @@
+import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent import AgentResult, ProofAgent, Workspace, WorkspaceError
@@ -45,12 +48,6 @@ class ChatRequest(BaseModel):
     text: str
     model: str | None = None  # override OPENROUTER_MODEL
     allowBuild: bool = False
-
-
-class ChatResponse(BaseModel):
-    query_id: str | None
-    response: str
-    cached: bool
 
 
 class HistoryTurn(BaseModel):
@@ -114,11 +111,22 @@ async def start_guest_session() -> None:
 
 @app.post(
     "/api/chat",
-    response_model=ChatResponse,
+    response_class=StreamingResponse,
     dependencies=[Depends(ensure_guest_session)],
 )
 async def chat(body: ChatRequest, request: Request):
-    """Run the proof agent for one user turn, using the Postgres cache."""
+    """Run the proof agent for one user turn, streaming events as SSE.
+
+    Each event is a `data: {json}` line. Agent events (`token`,
+    `tool_call_start`, `tool_result`) are forwarded as-is; see
+    `ProofAgent.stream`. The last event is always either
+
+      {"type": "done", "cached": bool, "query_id": str | None, "response": str,
+       "reply": str, "finished": bool, "tool_calls": list}
+
+    or, on failure mid-stream, `{"type": "error", "detail": str}`.
+    A cache hit (allowBuild false) sends only the `done` event.
+    """
     user = _user_id(request)
     chat_id = str(body.chat_id)
     model = body.model or Config.OPENROUTER_MODEL
@@ -127,8 +135,18 @@ async def chat(body: ChatRequest, request: Request):
         if not body.allowBuild:
             hit = await db.find_response(user, chat_id, model, body.text)
             if hit is not None:
-                return ChatResponse(
-                    query_id=hit["query_id"], response=hit["response"], cached=True
+                return _stream(
+                    _single(
+                        {
+                            "type": "done",
+                            "cached": True,
+                            "query_id": hit["query_id"],
+                            "response": hit["response"],
+                            "reply": hit["response"],
+                            "finished": True,
+                            "tool_calls": [],
+                        }
+                    )
                 )
 
         turns = await db.list_history(user, chat_id)
@@ -139,23 +157,41 @@ async def chat(body: ChatRequest, request: Request):
         agent = ProofAgent(workspace, model=model)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    result = await agent.run(body.text, turns)
 
-    response = _extract_lean(result)
-    query_id: str | None = None
-    if result.finished and response is not None:
+    async def events() -> AsyncIterator[str]:
         try:
-            query_id = await db.insert_turn(
-                user, chat_id, model, body.text, response, result.messages
-            )
-        except (RuntimeError, psycopg.Error) as e:
-            raise HTTPException(status_code=503, detail=f"Database error: {e}")
+            async for event in agent.stream(body.text, turns):
+                if event["type"] != "done":
+                    yield _sse(event)
+                    continue
 
-    return ChatResponse(
-        query_id=query_id,
-        response=response if response is not None else result.reply,
-        cached=False,
-    )
+                result = AgentResult(
+                    reply=event["reply"],
+                    messages=event["messages"],
+                    tool_calls=event["tool_calls"],
+                    finished=event["finished"],
+                )
+                response = _extract_lean(result)
+                query_id: str | None = None
+                if result.finished and response is not None:
+                    query_id = await db.insert_turn(
+                        user, chat_id, model, body.text, response, result.messages
+                    )
+                yield _sse(
+                    {
+                        "type": "done",
+                        "cached": False,
+                        "query_id": query_id,
+                        "response": response if response is not None else result.reply,
+                        "reply": result.reply,
+                        "finished": result.finished,
+                        "tool_calls": result.tool_calls,
+                    }
+                )
+        except Exception as e:  # status code is already sent; report in-band
+            yield _sse({"type": "error", "detail": f"{type(e).__name__}: {e}"})
+
+    return _stream(events())
 
 
 @app.get(
@@ -170,6 +206,22 @@ async def history(chat_id: UUID, request: Request):
     except (RuntimeError, psycopg.Error) as e:
         raise HTTPException(status_code=503, detail=f"Database error: {e}")
     return HistoryResponse(turns=turns)
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
+
+async def _single(event: dict) -> AsyncIterator[str]:
+    yield _sse(event)
+
+
+def _stream(body: AsyncIterator[str]) -> StreamingResponse:
+    return StreamingResponse(
+        body,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/files")
