@@ -502,6 +502,21 @@ def test_declaration_graph_counts_steps():
     assert decls["double_add"].depends_on == ["double_eq"]  # from `rw [double_eq, ...]`
 
 
+def test_benchmark_sources():
+    """The benchmark's edits each change one line and keep every theorem's statement."""
+    from graph.bench import generate, edits
+
+    base = generate(200)
+    statements = [line for line in base.split("\n") if line.startswith("theorem ")]
+    assert len(statements) == 150 and base.count("\ndef ") + base.startswith("def ") == 50
+    for name, source in edits(base).items():
+        old, new = base.split("\n"), source.split("\n")
+        changed = len(set(new) ^ set(old))
+        assert changed == (0 if name == "no change" else 1 if "proof edit" in name else 2), name
+        if "proof edit" in name:
+            assert [line for line in new if line.startswith("theorem ")] == statements
+
+
 def test_without_metaprogram_output():
     """If the metaprogram did not run, steps and their lemmas are still there."""
     source = (FIXTURES / "basic.lean").read_text(encoding="utf-8")

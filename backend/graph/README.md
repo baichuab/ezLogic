@@ -192,6 +192,35 @@ for d in decls.declarations:          # walkthrough order
 - Examples are named `example`, `example#2`, … by position. Any other name is the declaration's
   full name.
 
+## Benchmark
+
+Every build sends the whole file to Lean, so a small edit can cost as much as a full build.
+`python -m graph.bench` (from `backend/`, needs Lean) measures how much. It generates files of 50
+and 200 declarations (definitions, and theorems using `simp only`, `have`, `omega`, `induction`)
+and times a rebuild after each kind of edit:
+
+- no change;
+- a line added to the proof of the last, middle or first theorem (statement unchanged);
+- a change to the first definition.
+
+Each edit is timed four ways: today's `create_graph_sync`; the source command alone on a separate
+REPL with Lean's incrementality on, and with it off; and with incrementality on but an unrelated
+command sent in between, as when other users share the REPL. It also reports:
+- a cold build on a fresh REPL;
+- the REPL's memory;
+- whether positions in a command continued from a saved state count from that command;
+- whether `namespace` and `variable` carry over to the next command;
+- whether an old state id is caught after a restart;
+- with `--timeouts`, what a timeout does to the REPL.
+
+```
+python -m graph.bench --sizes 200 --repeat 3 --out bench.json
+python -m graph.bench --print-source 8      # look at a generated file; no Lean needed
+```
+
+The numbers decide whether per-declaration (incremental) extraction is worth building. If a proof
+edit to a middle theorem, with other commands in between, costs close to a cold build, it is.
+
 ## Limitations
 
 - **Mathlib:** the shared REPL in `agent/lean.py` is not set up as a Lake project with Mathlib, so
