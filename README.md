@@ -12,13 +12,66 @@ ezLogic is an intelligent platform that enables mathematicians to write and veri
 - **Iterate intelligently** by responding to verification errors and refining proofs
 
 ## Getting Started
-### Dependencies
 
+### Prerequisites
+- **Node.js** (v18+) and **npm** - For the SvelteKit frontend
+- **Python** (v3.8+) and **pip** - For the FastAPI backend
+- **Lean 4** - For proof verification (optional for development)
 
-### Running the program
-- cd frontend && npm install && npm run dev
-- cd backend && uv run fastapi dev
+### Installation
 
+#### 1. Clone and Install Dependencies
+
+```bash
+# Install frontend dependencies
+cd frontend
+npm install
+
+# Install backend dependencies
+cd ../backend
+pip install -r requirements.txt
+```
+
+#### 2. Configure Environment Variables
+
+```bash
+# Create backend environment file
+cd backend
+cp .env.example .env
+# Edit .env and add your ANTHROPIC_API_KEY
+```
+
+### Running the Application
+
+You'll need to run both the frontend and backend in separate terminals:
+
+#### Terminal 1 - Frontend
+```bash
+cd frontend
+npm run dev
+```
+The frontend will be available at `http://localhost:5173`
+
+#### Terminal 2 - Backend
+```bash
+cd backend
+python main.py
+```
+The backend API will be available at `http://localhost:8000`
+
+Access the interactive API documentation at `http://localhost:8000/docs`
+
+### Quick Start (All-in-One)
+
+If you have both terminals available, you can start everything:
+
+```bash
+# Terminal 1
+cd frontend && npm install && npm run dev
+
+# Terminal 2
+cd backend && pip install -r requirements.txt && python main.py
+```
 
 ## Architecture
 
