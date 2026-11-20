@@ -1,5 +1,5 @@
 import katex from 'katex';
-import type { StepKind } from './types';
+import type { LiveItem, StepKind } from './types';
 
 export function tex(src: string, displayMode = false): string {
 	return katex.renderToString(src, { displayMode, throwOnError: false, output: 'html' });
@@ -43,6 +43,63 @@ export const KIND_LABEL: Record<StepKind, string> = {
 	conclusion: 'Conclusion',
 	response: 'Response'
 };
+
+// ---------------------------------------------------------------------------
+// Live agent view: the "what's happening" indicator and the collapsed trace
+
+/** Friendlier wording than a raw tool name, for both the live indicator and the trace rows. */
+export const TOOL_LABEL: Record<string, string> = {
+	check_lean_file: 'Checking the proof with Lean',
+	check_lean_snippet: 'Checking a snippet with Lean',
+	write_file: 'Writing the proof',
+	edit_file: 'Updating the proof',
+	read_file: 'Reading the workspace',
+	list_files: 'Looking at the workspace',
+	delete_file: 'Cleaning up'
+};
+
+export const toolLabel = (name: string): string => TOOL_LABEL[name] ?? `Running ${name}`;
+
+const FENCE = /```(\w*)\s*([\s\S]*?)```/g;
+const OPEN_FENCE = /```(\w*)\s*([\s\S]*)$/;
+
+/** Short placeholder for a fenced block that's still being written, by language tag. */
+const OPEN_BLOCK_LABEL: Record<string, string> = {
+	json: 'Preparing proof steps…',
+	lean: 'Writing Lean…',
+	lean4: 'Writing Lean…'
+};
+
+/**
+ * What to show of the agent's streaming commentary. A *complete* fenced code
+ * block (```json steps, ```lean, ...) is hidden outright: the finished
+ * message shows the real thing properly rendered. A block that's still
+ * *open* (no closing fence has arrived yet) becomes a short placeholder
+ * instead of streaming raw, half-formed JSON or Lean onto the screen.
+ */
+export function liveProse(text: string): string {
+	const withoutClosedBlocks = text.replace(FENCE, '');
+	const open = withoutClosedBlocks.match(OPEN_FENCE);
+	if (!open) return withoutClosedBlocks.trim();
+	const lang = open[1].toLowerCase();
+	const before = withoutClosedBlocks.slice(0, open.index);
+	return (before + (OPEN_BLOCK_LABEL[lang] ?? 'Writing…')).trim();
+}
+
+/**
+ * One-line summary for the collapsed "How this was checked" section on a
+ * finished message, e.g. "4 tool steps · last Lean check passed". Empty when
+ * there are no tool steps at all (the section is then hidden).
+ */
+export function traceSummary(items: LiveItem[]): string {
+	const tools = items.filter((i): i is Extract<LiveItem, { kind: 'tool' }> => i.kind === 'tool');
+	if (tools.length === 0) return '';
+	const steps = `${tools.length} tool step${tools.length === 1 ? '' : 's'}`;
+	const checks = tools.filter((t) => t.name === 'check_lean_file' || t.name === 'check_lean_snippet');
+	const lastCheck = checks.at(-1);
+	if (!lastCheck) return steps;
+	return `${steps} · last Lean check ${lastCheck.state === 'ok' ? 'passed' : 'failed'}`;
+}
 
 // ---------------------------------------------------------------------------
 // Minimal Lean 4 syntax highlighter (line-by-line, returns HTML).

@@ -1,4 +1,7 @@
+import asyncio
 import json
+import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -16,11 +19,36 @@ from guest_session import ensure_guest_session
 
 import db
 
+# Only the root logger needs a handler; every module below logs through
+# logging.getLogger(__name__), e.g. "main", "agent.agent", "agent.lean". Everything
+# ends up in this process's terminal -- there is no log file (see backend/README.md).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)  # the OpenAI client's HTTP logs are noisy at INFO
+
+log = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await db.init_db()
+    # Best-effort and non-blocking: starts the Lean REPL and preloads Mathlib (if
+    # applicable) in the background, so the first chat request isn't the one that
+    # pays for it. See agent/lean.py's warm_up().
+    asyncio.create_task(_warm_up_lean())
     yield
+
+
+async def _warm_up_lean() -> None:
+    try:
+        t0 = time.monotonic()
+        await lean.warm_up()
+        log.info("Lean REPL warm-up finished in %.1fs", time.monotonic() - t0)
+    except Exception:
+        log.exception("Lean REPL warm-up failed; will retry lazily on first use")
 
 
 app = FastAPI(
@@ -130,11 +158,16 @@ async def chat(body: ChatRequest, request: Request):
     user = _user_id(request)
     chat_id = str(body.chat_id)
     model = body.model or Config.OPENROUTER_MODEL
+    log.info(
+        "chat request chat_id=%s user=%s model=%s allowBuild=%s len(text)=%d",
+        chat_id, user, model, body.allowBuild, len(body.text),
+    )
 
     try:
         if not body.allowBuild:
             hit = await db.find_response(user, chat_id, model, body.text)
             if hit is not None:
+                log.info("chat cache hit chat_id=%s query_id=%s", chat_id, hit["query_id"])
                 return _stream(
                     _single(
                         {
@@ -151,14 +184,17 @@ async def chat(body: ChatRequest, request: Request):
 
         turns = await db.list_history(user, chat_id)
     except (RuntimeError, psycopg.Error) as e:
+        log.error("chat db error chat_id=%s: %s", chat_id, e)
         raise HTTPException(status_code=503, detail=f"Database error: {e}")
 
     try:
         agent = ProofAgent(workspace, model=model)
     except RuntimeError as e:
+        log.error("chat agent init failed chat_id=%s: %s", chat_id, e)
         raise HTTPException(status_code=503, detail=str(e))
 
     async def events() -> AsyncIterator[str]:
+        t0 = time.monotonic()
         try:
             async for event in agent.stream(body.text, turns):
                 if event["type"] != "done":
@@ -177,6 +213,11 @@ async def chat(body: ChatRequest, request: Request):
                     query_id = await db.insert_turn(
                         user, chat_id, model, body.text, response, result.messages
                     )
+                log.info(
+                    "chat done chat_id=%s finished=%s saved=%s tool_calls=%d elapsed=%.1fs",
+                    chat_id, result.finished, query_id is not None, len(result.tool_calls),
+                    time.monotonic() - t0,
+                )
                 yield _sse(
                     {
                         "type": "done",
@@ -189,6 +230,7 @@ async def chat(body: ChatRequest, request: Request):
                     }
                 )
         except Exception as e:  # status code is already sent; report in-band
+            log.exception("chat stream failed chat_id=%s after %.1fs", chat_id, time.monotonic() - t0)
             yield _sse({"type": "error", "detail": f"{type(e).__name__}: {e}"})
 
     return _stream(events())
@@ -204,6 +246,7 @@ async def history(chat_id: UUID, request: Request):
     try:
         turns = await db.list_history(_user_id(request), str(chat_id))
     except (RuntimeError, psycopg.Error) as e:
+        log.error("history db error chat_id=%s: %s", chat_id, e)
         raise HTTPException(status_code=503, detail=f"Database error: {e}")
     return HistoryResponse(turns=turns)
 

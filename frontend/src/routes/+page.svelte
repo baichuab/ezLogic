@@ -1,24 +1,77 @@
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { fade, fly } from 'svelte/transition';
-	import { isMockMode, sendMessage } from '#lib/api.js';
+	import {
+		ApiError,
+		applyEvent,
+		emptyLiveMessage,
+		endLive,
+		ensureSession,
+		finalizeLive,
+		getHistory,
+		isMockMode,
+		newChatId,
+		streamChat
+	} from '#lib/api.js';
+	import { toolLabel } from '#lib/format.js';
 	import { demoChats } from '#lib/mock.js';
-	import type { AssistantMessage, Chat } from '#lib/types.js';
+	import { composePrompt, extractProofText, FileError } from '#lib/extract.js';
+	import type { AssistantMessage, Chat, VerificationStatus } from '#lib/types.js';
 	import Brace from '#lib/components/Brace.svelte';
 	import Composer from '#lib/components/Composer.svelte';
+	import FileDrop from '#lib/components/FileDrop.svelte';
+	import LiveMessage from '#lib/components/LiveMessage.svelte';
 	import ProofSteps from '#lib/components/ProofSteps.svelte';
 	import Sidebar from '#lib/components/Sidebar.svelte';
 	import StepDetail from '#lib/components/StepDetail.svelte';
 
+	const STATUS_ANNOUNCE: Record<VerificationStatus, string> = {
+		verified: 'Verified in Lean 4',
+		unverified: 'Not yet verified',
+		failed: 'Verification incomplete'
+	};
+
 	// ---- state ---------------------------------------------------------------
-	let chats = $state<Chat[]>(demoChats());
+	let chats = $state<Chat[]>(isMockMode ? demoChats() : []);
 	let activeId = $state<string | null>(chats[0]?.id ?? null);
 	let selection = $state<{ messageId: string; stepId: string } | null>(null);
 	let showLean = $state(false);
 	let sidebarPinned = $state(true);
 	let drawerOpen = $state(false);
-	let busy = $state(false);
-	let error = $state<{ text: string; message: string } | null>(null);
+	/** Set when loading a chat's stored history (GET /api/history) fails. Unrelated to a
+	 * streaming run's own errors, which are shown inline on that message instead. */
+	let historyError = $state<string | null>(null);
+	/** Set when the guest session bootstrap (POST /api/session) fails. */
+	let sessionError = $state<string | null>(null);
+	/** Announced to screen readers as the agent works; not every token, just milestones. */
+	let liveAnnouncement = $state('');
+
+	/** The one run allowed at a time (backend/main.py uses a single shared workspace, so two
+	 * concurrent runs could overwrite each other's .lean files -- see frontend/README.md B9). */
+	let inFlight = $state<{ chatId: string; messageId: string; controller: AbortController } | null>(null);
+	const running = $derived(inFlight !== null);
+
+	type Attachment = { name: string; size: number };
+
+	// Proof file chosen for a new chat; its text is extracted as soon as it is picked.
+	let file = $state<File | null>(null);
+	let fileError = $state('');
+	let fileText = $state<string | null>(null);
+	let reading = $state(false);
+
+	onMount(() => {
+		if (isMockMode) return;
+		ensureSession().catch((e) => {
+			sessionError = e instanceof Error ? e.message : String(e);
+		});
+	});
+
+	function retrySession() {
+		sessionError = null;
+		ensureSession().catch((e) => {
+			sessionError = e instanceof Error ? e.message : String(e);
+		});
+	}
 
 	const active = $derived(chats.find((c) => c.id === activeId) ?? null);
 	const selectedMessage = $derived(
@@ -50,68 +103,199 @@
 		selection = null;
 	}
 
-	function openChat(id: string) {
+	async function openChat(id: string) {
 		activeId = id;
 		selection = null;
 		drawerOpen = false;
-		error = null;
+		historyError = null;
+		const chat = chats.find((c) => c.id === id);
+		if (!chat || chat.messages.length > 0 || isMockMode) return;
+		try {
+			chat.messages = await getHistory(id);
+		} catch (e) {
+			historyError = e instanceof Error ? e.message : String(e);
+		}
 	}
 
 	function newChat() {
+		file = null;
+		fileError = '';
 		activeId = null;
 		selection = null;
 		drawerOpen = false;
-		error = null;
+		historyError = null;
 	}
 
-	async function send(text: string) {
-		error = null;
+	/** Streams one turn into `chat`, replacing the `draftId` placeholder message as events arrive. */
+	async function runTurn(chat: Chat, text: string, draftId: string) {
+		let draft = emptyLiveMessage(draftId);
+		chat.messages.push(draft);
+		scrollToBottom();
+
+		const controller = new AbortController();
+		inFlight = { chatId: chat.id, messageId: draftId, controller };
+
+		// Tokens can arrive many times a second; redrawing (and re-running KaTeX)
+		// on every single one is wasteful, so batch updates to once per frame.
+		// `done`/stop/error are applied immediately instead, below.
+		let pendingFrame = 0;
+		const flush = () => {
+			const idx = chat.messages.findIndex((m) => m.id === draftId);
+			if (idx !== -1) chat.messages[idx] = draft;
+		};
+		const scheduleFlush = () => {
+			if (pendingFrame) return;
+			pendingFrame = requestAnimationFrame(() => {
+				pendingFrame = 0;
+				flush();
+				maybeAutoScroll();
+			});
+		};
+
+		try {
+			for await (const ev of streamChat(chat.id, text, { signal: controller.signal })) {
+				if (ev.type === 'done') {
+					draft = finalizeLive(draft, ev);
+					flush();
+					chat.updatedAt = Date.now();
+					liveAnnouncement = STATUS_ANNOUNCE[draft.status];
+					maybeAutoScroll();
+				} else {
+					draft = applyEvent(draft, ev);
+					if (ev.type === 'tool_call_start') liveAnnouncement = toolLabel(ev.name);
+					scheduleFlush();
+				}
+			}
+		} catch (e) {
+			if (e instanceof ApiError && e.kind === 'aborted') {
+				draft = endLive(draft, 'stopped');
+				liveAnnouncement = 'Stopped';
+			} else {
+				const detail = e instanceof Error ? e.message : String(e);
+				draft = endLive(draft, 'error', detail);
+				liveAnnouncement = `Error: ${detail}`;
+			}
+			flush();
+			maybeAutoScroll();
+		} finally {
+			if (pendingFrame) cancelAnimationFrame(pendingFrame);
+			if (inFlight?.messageId === draftId) inFlight = null;
+		}
+	}
+
+	// Extracts the attached file's text as soon as it's picked, so it's ready by the
+	// time the user hits send (submit() below checks fileText, not file, before
+	// treating the pick as ready to attach).
+	$effect(() => {
+		const f = file;
+		fileText = null;
+		if (!f) {
+			reading = false;
+			return;
+		}
+		let stale = false;
+		reading = true;
+		extractProofText(f)
+			.then((t) => {
+				if (!stale) fileText = t;
+			})
+			.catch((e) => {
+				if (stale) return;
+				fileError = e instanceof FileError ? e.message : String(e);
+				file = null;
+			})
+			.finally(() => {
+				if (!stale) reading = false;
+			});
+		return () => {
+			stale = true;
+		};
+	});
+
+	/** Composer's onsend: folds in the attached file's extracted text (if any) before sending. */
+	function submit(text: string) {
+		if (file && fileText !== null) {
+			const attachment = { name: file.name, size: file.size };
+			const prompt = composePrompt(text, file.name, fileText);
+			file = null;
+			return send(text, prompt, attachment);
+		}
+		return send(text);
+	}
+
+	async function send(text: string, prompt = text, attachment?: Attachment) {
+		if (running) return;
 		let chat = active;
 		if (!chat) {
+			const title = text || attachment?.name || 'New proof';
 			chat = {
-				id: `c-${Date.now().toString(36)}`,
-				title: text.length > 48 ? text.slice(0, 47) + '…' : text,
+				id: newChatId(),
+				title: title.length > 48 ? title.slice(0, 47) + '…' : title,
 				messages: [],
-				history: [],
 				updatedAt: Date.now()
 			};
 			chats.unshift(chat);
 			activeId = chat.id;
 			chat = chats[0];
 		}
-		chat.messages.push({ id: `u-${Date.now().toString(36)}`, role: 'user', text });
+		// `prompt` (which may include an attachment's extracted text) is only kept on
+		// the message when it differs from `text`, so retryMessage can resend it later
+		// without silently dropping the attached file's content.
+		chat.messages.push({
+			id: `u-${Date.now().toString(36)}`,
+			role: 'user',
+			text,
+			attachment,
+			prompt: prompt !== text ? prompt : undefined
+		});
 		scrollToBottom();
-
-		busy = true;
-		try {
-			const res = await sendMessage(text, chat.history);
-			chat.messages.push(res.message);
-			chat.history = res.history;
-			chat.updatedAt = Date.now();
-			scrollToBottom();
-		} catch (e) {
-			error = { text, message: e instanceof Error ? e.message : String(e) };
-		} finally {
-			busy = false;
-		}
+		await runTurn(chat, prompt, `live-${Date.now().toString(36)}`);
 	}
 
-	function retry() {
-		if (!error || !active) return;
-		const { text } = error;
-		const lastMsg = active.messages.at(-1);
-		if (lastMsg?.role === 'user' && lastMsg.text === text) active.messages.pop();
-		send(text);
+	/** Retries a failed/stopped message: drops it and re-runs the same turn (including
+	 * any attached file's text), without duplicating the user bubble above it. */
+	function retryMessage(messageId: string) {
+		if (!active || running) return;
+		const chat = active;
+		const idx = chat.messages.findIndex((m) => m.id === messageId);
+		if (idx <= 0) return;
+		const prev = chat.messages[idx - 1];
+		if (prev.role !== 'user') return;
+		chat.messages.splice(idx, 1);
+		runTurn(chat, prev.prompt ?? prev.text, `live-${Date.now().toString(36)}`);
+	}
+
+	function stop() {
+		inFlight?.controller.abort();
 	}
 
 	// ---- scrolling & brace geometry -----------------------------------------
 	let scroller: HTMLDivElement | undefined = $state();
 	let braceEl: HTMLDivElement | undefined = $state();
 	let brace = $state({ tipY: 0, height: 0 });
+	/** Shown once new content arrives while the user has scrolled away from the bottom to read. */
+	let showJumpToBottom = $state(false);
+
+	function nearBottom(): boolean {
+		if (!scroller) return true;
+		return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+	}
 
 	async function scrollToBottom() {
 		await tick();
 		scroller?.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+		showJumpToBottom = false;
+	}
+
+	/** Follows new streamed content only if the user hasn't scrolled away to read something. */
+	function maybeAutoScroll() {
+		if (nearBottom()) scrollToBottom();
+		else showJumpToBottom = true;
+	}
+
+	function onscroll() {
+		measureBrace();
+		if (nearBottom()) showJumpToBottom = false;
 	}
 
 	function measureBrace() {
@@ -167,6 +351,8 @@
 
 <svelte:window {onkeydown} />
 
+<div aria-live="polite" class="sr-only">{liveAnnouncement}</div>
+
 <div class="flex h-dvh overflow-hidden">
 	{#if sidebarDocked}
 		<div class="hidden md:block" transition:fly={{ x: -24, duration: 160 }}>
@@ -201,20 +387,50 @@
 			{#if isMockMode}
 				<span
 					class="ml-auto rounded-full border border-line px-2.5 py-0.5 text-xs text-muted"
-					title="Set VITE_API_URL to connect to the backend agent">Demo data</span
+					title="Unset VITE_MOCK to connect to the backend agent">Demo data</span
 				>
 			{/if}
 		</header>
 
+		{#if sessionError}
+			<div
+				class="mx-3 mb-2 flex items-center gap-3 rounded-xl border border-warn/30 bg-warn-soft px-4 py-2.5 text-sm text-warn"
+				role="alert"
+				transition:fade={{ duration: 120 }}
+			>
+				<span class="flex-1">Can't reach the server: {sessionError}</span>
+				<button type="button" onclick={retrySession} class="font-medium underline underline-offset-2">
+					Retry
+				</button>
+			</div>
+		{/if}
+
+		{#if historyError}
+			<div
+				class="mx-3 mb-2 flex items-center gap-3 rounded-xl border border-warn/30 bg-warn-soft px-4 py-2.5 text-sm text-warn"
+				role="alert"
+				transition:fade={{ duration: 120 }}
+			>
+				<span class="flex-1">Couldn't load this chat: {historyError}</span>
+				<button
+					type="button"
+					onclick={() => activeId && openChat(activeId)}
+					class="font-medium underline underline-offset-2"
+				>
+					Retry
+				</button>
+			</div>
+		{/if}
+
 		<!-- Conversation + detail split -->
 		<div class="flex min-h-0 flex-1 gap-0 px-3 lg:px-4">
 			<section
-				class="flex min-h-0 min-w-0 flex-col transition-[width] duration-200
+				class="relative flex min-h-0 min-w-0 flex-col transition-[width] duration-200
 				{expanded ? 'w-full lg:w-[400px] lg:shrink-0 xl:w-[440px]' : 'w-full'}"
 			>
 				<div
 					bind:this={scroller}
-					onscroll={measureBrace}
+					{onscroll}
 					class="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
 				>
 					{#if !active || active.messages.length === 0}
@@ -223,15 +439,16 @@
 							<p class="font-serif text-4xl text-ink" aria-hidden="true">∀ ∃ ⊢</p>
 							<h2 class="mt-4 text-2xl font-semibold tracking-tight">What would you like to prove?</h2>
 							<p class="mt-2 max-w-md text-sm text-ink-2">
-								Describe a theorem or paste a proof sketch. ezLogic formalises it in Lean, checks it,
+								Describe a theorem, paste a proof sketch, or upload a .tex or .pdf proof. ezLogic formalises it in Lean, checks it,
 								and explains each step.
 							</p>
 							<div class="mt-6 flex flex-wrap justify-center gap-2">
 								{#each EXAMPLES as ex (ex)}
 									<button
 										type="button"
+										disabled={running}
 										onclick={() => send(ex)}
-										class="rounded-full border border-line bg-surface px-3.5 py-1.5 text-sm text-ink-2 transition hover:border-line-strong hover:text-ink"
+										class="rounded-full border border-line bg-surface px-3.5 py-1.5 text-sm text-ink-2 transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
 									>
 										{ex}
 									</button>
@@ -247,8 +464,20 @@
 										<p
 											class="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink"
 										>
+											{#if msg.attachment}
+												<span class="mb-1.5 flex items-center gap-1.5 rounded-lg bg-surface px-2.5 py-1 text-xs text-ink-2">
+													<svg viewBox="0 0 20 20" class="size-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6">
+														<path d="M5 2.5h6.5L15 6v11.5H5z M11.5 2.5V6H15" stroke-linejoin="round" />
+													</svg>
+													<span class="truncate">{msg.attachment.name}</span>
+												</span>
+											{/if}
 											{msg.text}
 										</p>
+									</div>
+								{:else if msg.live}
+									<div in:fade={{ duration: 120 }}>
+										<LiveMessage message={msg} onretry={() => retryMessage(msg.id)} />
 									</div>
 								{:else}
 									<ProofSteps
@@ -259,32 +488,20 @@
 									/>
 								{/if}
 							{/each}
-
-							{#if busy}
-								<div class="flex items-center gap-3 pl-11 text-sm text-ink-2" in:fade>
-									<span class="flex gap-1" aria-hidden="true">
-										<span class="size-1.5 animate-bounce rounded-full bg-muted"></span>
-										<span class="size-1.5 animate-bounce rounded-full bg-muted [animation-delay:120ms]"></span>
-										<span class="size-1.5 animate-bounce rounded-full bg-muted [animation-delay:240ms]"></span>
-									</span>
-									Writing and checking the Lean proof…
-								</div>
-							{/if}
-
-							{#if error}
-								<div
-									class="ml-11 flex items-center gap-3 rounded-xl border border-warn/30 bg-warn-soft px-4 py-3 text-sm text-warn"
-									role="alert"
-								>
-									<span class="flex-1">{error.message}</span>
-									<button type="button" onclick={retry} class="font-medium underline underline-offset-2">
-										Retry
-									</button>
-								</div>
-							{/if}
 						</div>
 					{/if}
 				</div>
+
+				{#if showJumpToBottom}
+					<button
+						type="button"
+						onclick={scrollToBottom}
+						transition:fade={{ duration: 120 }}
+						class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-paper shadow-lg transition hover:opacity-90"
+					>
+						↓ New activity
+					</button>
+				{/if}
 			</section>
 
 			{#if expanded && selectedMessage && selectedStep}
@@ -311,9 +528,24 @@
 		<!-- Composer: present in every state -->
 		<div class="shrink-0 px-4 pb-4 pt-2">
 			<div class="mx-auto max-w-3xl">
-				<Composer {busy} onsend={send} />
+				{#if !active || active.messages.length === 0}
+					<div class="mb-2">
+						<FileDrop bind:file bind:error={fileError} disabled={running} />
+						{#if reading}
+							<p class="mt-1.5 px-2 text-xs text-muted">Reading file…</p>
+						{/if}
+					</div>
+				{/if}
+				<Composer
+					{running}
+					allowEmpty={!!file && fileText !== null}
+					onsend={submit}
+					onstop={stop}
+				/>
 				<p class="mt-2 text-center text-[11px] text-muted">
-					Proofs are checked by Lean 4. Explanations are AI-generated.
+					{running
+						? 'A proof is currently running — use Stop to cancel.'
+						: 'Proofs are checked by Lean 4. Explanations are AI-generated.'}
 				</p>
 			</div>
 		</div>

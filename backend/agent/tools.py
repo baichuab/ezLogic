@@ -57,7 +57,8 @@ TOOL_SCHEMAS = [
     _fn(
         "check_lean_snippet",
         "Quickly check a short, self-contained Lean 4 snippet in a Lean REPL (no file needed). "
-        "Good for testing a lemma, tactic, or #check/#eval before writing it to a file.",
+        "Good for testing a lemma, tactic, or #check/#eval before writing it to a file. Mathlib "
+        "is already imported in this REPL; any `import` line in the snippet is simply ignored.",
         {"code": {"type": "string", "description": "Lean 4 source code"}},
         ["code"],
     ),
