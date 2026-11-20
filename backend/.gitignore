@@ -3,3 +3,5 @@ __pycache__/
 .env
 .lean_cache/
 workspace/
+workspace.lock
+.pytest_cache/
