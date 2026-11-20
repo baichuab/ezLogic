@@ -1,5 +1,8 @@
+import json
+
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent import ProofAgent, Workspace, WorkspaceError
@@ -30,13 +33,6 @@ class ChatRequest(BaseModel):
     model: str | None = None  # override OPENROUTER_MODEL
 
 
-class ChatResponse(BaseModel):
-    reply: str
-    messages: list[dict]
-    tool_calls: list[dict]
-    finished: bool
-
-
 class SnippetRequest(BaseModel):
     code: str
 
@@ -62,17 +58,36 @@ async def start_guest_session() -> None:
 
 @app.post(
     "/api/chat",
-    response_model=ChatResponse,
+    response_class=StreamingResponse,
     dependencies=[Depends(ensure_guest_session)],
 )
 async def chat(request: ChatRequest):
-    """Run the proof agent for one user turn."""
+    """Run the proof agent for one user turn, streaming events as SSE.
+
+    Each event is a `data: {json}` line; see `ProofAgent.stream` for event types.
+    On failure mid-stream an `{"type": "error", "detail": ...}` event is sent.
+    """
     try:
         agent = ProofAgent(workspace, model=request.model)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    result = await agent.run(request.message, request.history)
-    return ChatResponse(**result.__dict__)
+
+    async def events():
+        try:
+            async for event in agent.stream(request.message, request.history):
+                yield _sse(event)
+        except Exception as e:  # status code is already sent; report in-band
+            yield _sse({"type": "error", "detail": f"{type(e).__name__}: {e}"})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
 
 @app.get("/api/files")

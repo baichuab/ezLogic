@@ -1,7 +1,7 @@
 """Tool-calling agent loop backed by OpenRouter (OpenAI-compatible API)."""
 
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
@@ -57,68 +57,144 @@ class ProofAgent:
             default_headers={"HTTP-Referer": Config.FRONTEND_URL, "X-Title": "ezLogic"},
         )
 
+    async def stream(
+        self, user_message: str, history: list[dict] | None = None
+    ) -> AsyncIterator[dict]:
+        """Run one user turn, yielding events as they happen.
+
+        Event types:
+          {"type": "token", "content": str}
+          {"type": "tool_call_start", "id": str, "name": str}
+          {"type": "tool_result", "id": str, "name": str, "arguments": dict, "result": Any}
+          {"type": "done", "reply": str, "messages": list, "tool_calls": list, "finished": bool}
+        """
+        messages = list(history or []) + [{"role": "user", "content": user_message}]
+        trace: list[dict] = []
+
+        for _ in range(Config.AGENT_MAX_STEPS):
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages],
+                tools=TOOL_SCHEMAS,
+                stream=True,
+            )
+
+            content_parts: list[str] = []
+            # tool call fragments keyed by index: {"id", "name", "arguments"}
+            pending: dict[int, dict] = {}
+
+            async for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+
+                if delta.content:
+                    content_parts.append(delta.content)
+                    yield {"type": "token", "content": delta.content}
+
+                for tc in delta.tool_calls or []:
+                    entry = pending.setdefault(
+                        tc.index,
+                        {"id": "", "name": "", "arguments": "", "announced": False},
+                    )
+                    if tc.id:
+                        entry["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            entry["name"] += tc.function.name
+                        if tc.function.arguments:
+                            entry["arguments"] += tc.function.arguments
+                    if not entry["announced"] and entry["name"]:
+                        entry["announced"] = True
+                        yield {
+                            "type": "tool_call_start",
+                            "id": entry["id"],
+                            "name": entry["name"],
+                        }
+
+            content = "".join(content_parts)
+            tool_calls = [pending[i] for i in sorted(pending)]
+
+            assistant: dict = {"role": "assistant", "content": content}
+            if tool_calls:
+                assistant["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+            messages.append(assistant)
+
+            if not tool_calls:
+                yield {
+                    "type": "done",
+                    "reply": content,
+                    "messages": messages,
+                    "tool_calls": trace,
+                    "finished": True,
+                }
+                return
+
+            for tc in tool_calls:
+                try:
+                    args = json.loads(tc["arguments"] or "{}")
+                    result = await run_tool(self.workspace, tc["name"], args)
+                except json.JSONDecodeError as e:
+                    args, result = {}, {"error": f"Invalid JSON arguments: {e}"}
+                call = {"name": tc["name"], "arguments": args, "result": result}
+                trace.append(call)
+                yield {"type": "tool_result", "id": tc["id"], **call}
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": serialize_result(result),
+                    }
+                )
+
+        yield {
+            "type": "done",
+            "reply": "Stopped: reached the maximum number of agent steps.",
+            "messages": messages,
+            "tool_calls": trace,
+            "finished": False,
+        }
+
     async def run(
         self,
         user_message: str,
         history: list[dict] | None = None,
         on_tool_call: Callable[[dict], None] | None = None,
+        on_token: Callable[[str], None] | None = None,
     ) -> AgentResult:
-        """Run one user turn. `on_tool_call` is called after each tool executes (for live logging)."""
-        messages = list(history or []) + [{"role": "user", "content": user_message}]
-        trace: list[dict] = []
+        """Run one user turn to completion (non-streaming wrapper around `stream`).
 
-        for _ in range(Config.AGENT_MAX_STEPS):
-            completion = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages],
-                tools=TOOL_SCHEMAS,
-            )
-            msg = completion.choices[0].message
-
-            assistant: dict = {"role": "assistant", "content": msg.content or ""}
-            if msg.tool_calls:
-                assistant["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in msg.tool_calls
-                ]
-            messages.append(assistant)
-
-            if not msg.tool_calls:
+        `on_tool_call` is called after each tool executes and `on_token` for each
+        text delta (for live logging).
+        """
+        async for event in self.stream(user_message, history):
+            kind = event["type"]
+            if kind == "token" and on_token:
+                on_token(event["content"])
+            elif kind == "tool_result" and on_tool_call:
+                on_tool_call(
+                    {k: event[k] for k in ("name", "arguments", "result")}
+                )
+            elif kind == "done":
                 return AgentResult(
-                    reply=msg.content or "", messages=messages, tool_calls=trace
+                    reply=event["reply"],
+                    messages=event["messages"],
+                    tool_calls=event["tool_calls"],
+                    finished=event["finished"],
                 )
-
-            for tc in msg.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments or "{}")
-                    result = await run_tool(self.workspace, tc.function.name, args)
-                except json.JSONDecodeError as e:
-                    args, result = {}, {"error": f"Invalid JSON arguments: {e}"}
-                call = {"name": tc.function.name, "arguments": args, "result": result}
-                trace.append(call)
-                if on_tool_call:
-                    on_tool_call(call)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": serialize_result(result),
-                    }
-                )
-
-        return AgentResult(
-            reply="Stopped: reached the maximum number of agent steps.",
-            messages=messages,
-            tool_calls=trace,
-            finished=False,
-        )
+        raise RuntimeError("Agent stream ended without a 'done' event")
 
 
 # --- CLI for manual testing ---------------------------------------------------------
@@ -160,9 +236,21 @@ async def main(argv: list[str] | None = None) -> None:
     print(f"ezLogic agent | model: {agent.model} | workspace: {workspace.root}")
 
     async def turn(prompt: str, history: list[dict]) -> list[dict]:
-        result = await agent.run(prompt, history, on_tool_call=_print_tool_call)
-        print(f"\n\033[1magent>\033[0m {result.reply}\n")
-        return result.messages
+        print("\033[1magent>\033[0m ", end="", flush=True)
+        messages = history
+        async for event in agent.stream(prompt, history):
+            kind = event["type"]
+            if kind == "token":
+                print(event["content"], end="", flush=True)
+            elif kind == "tool_result":
+                print()
+                _print_tool_call(event)
+            elif kind == "done":
+                if not event["finished"]:
+                    print(event["reply"], end="")
+                messages = event["messages"]
+        print("\n")
+        return messages
 
     if args.prompt:
         await turn(" ".join(args.prompt), [])
