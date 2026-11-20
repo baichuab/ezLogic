@@ -29,15 +29,37 @@ IGNORED_PREFIXES = ("Lean.", "Std.Tactic.", "Mathlib.Tactic.", "Aesop.", "Batter
 
 _IDENT = re.compile(r"[^\W\d][\w'!?]*(?:\.[^\W\d][\w'!?]*)*")
 
-# What a declaration written in the source starts with: optional doc comment, attributes and
-# modifiers, then a declaration keyword. Used to tell real declarations apart from other constants
-# Lean gives a source range (derived instances, `notation`/`syntax` parsers).
+# What a declaration written in the source starts with: optional `set_option … in` / `open … in`,
+# doc comment, attributes and modifiers, then a declaration keyword. This tells declarations the
+# user wrote apart from constants Lean generates with a source range of their own: the parsers and
+# macros of `notation`, `syntax`, `macro`, `macro_rules` (which the REPL even reports as
+# definitions), and instances made by `deriving`.
 _DECL_START = re.compile(
+    r"(?:(?:set_option\s+\S+\s+\S+|open\s[^\n]*?)\s+in\s+)*"
     r"(?:/--.*?-/\s*)?(?:@\[[^\]]*\]\s*)*"
     r"(?:(?:private|protected|public|noncomputable|partial|unsafe|nonrec|scoped|local)\s+)*"
-    r"(?:def|theorem|lemma|abbrev|instance|structure|class|inductive|opaque|axiom)\b",
+    r"(?:def|theorem|lemma|abbrev|instance|structure|class|inductive|opaque|axiom|example|irreducible_def)\b",
     re.S,
 )
+
+
+def display_name(name: str) -> str:
+    """The name as written in the source. Lean stores `private theorem p1` as `_private.0.p1`
+    (`_private.<module>.0.p1` in a named module): keep what follows the number."""
+    parts = name.split(".")
+    if parts[0] != "_private":
+        return name
+    number = next((i for i, part in enumerate(parts) if part.isdigit()), None)
+    return ".".join(parts[number + 1 :]) if number is not None and number + 1 < len(parts) else name
+
+
+def _written_as_declaration(lines: list[str], line: int, column: int) -> bool:
+    """Whether the source (split into `lines`) has a declaration keyword at this 1-based line and
+    column, after any doc comment, attributes and modifiers."""
+    if not 1 <= line <= len(lines):
+        return False
+    head = "\n".join(lines[line - 1 : line + 49])[column:]  # enough for a doc comment and attributes
+    return _DECL_START.match(head) is not None
 
 Pos = tuple[int, int]
 Span = tuple[Pos, Pos]
@@ -71,9 +93,7 @@ def recovered_declarations(ex: Extraction, source: str) -> list[Declaration]:
         sl, sc, el, ec = c.range
         if any(start <= (sl, sc) <= end for start, end in reported):
             continue  # e.g. an instance derived by a structure's `deriving` clause
-        line = sl - ex.line_offset
-        head = "\n".join(lines[line - 1 : line + 49])[sc:]  # enough for a doc comment and attributes
-        if not 1 <= line <= len(lines) or not _DECL_START.match(head):
+        if not _written_as_declaration(lines, sl - ex.line_offset, sc):
             continue
         start, finish = LeanPos(line=sl, column=sc), LeanPos(line=el, column=ec)
         found.append(
@@ -195,11 +215,17 @@ class _Builder:
     # --- passes --------------------------------------------------------------------------
 
     def add_declarations(self) -> None:
-        declarations = self.ex.declarations + recovered_declarations(self.ex, self.source)
+        lines = self.source.split("\n")
+        written = [
+            d
+            for d in self.ex.declarations
+            if _written_as_declaration(lines, d.range.start.line - self.ex.line_offset, d.range.start.column)
+        ]
+        declarations = written + recovered_declarations(self.ex, self.source)
         local = self.ex.local_constants or {}
         for d in sorted(declarations, key=lambda d: (d.range.start.line, d.range.start.column)):
             span = self._span(d.range.start, d.range.finish)
-            label = "example" if d.kind == "example" else d.name
+            label = "example" if d.kind == "example" else display_name(d.name)
             # The REPL's statement is only the part after the colon (`double a ≤ 2 * c`); Lean's
             # type of the constant also has the binders and hypotheses. Examples have no constant.
             full = local[d.name].statement if d.name in local else None

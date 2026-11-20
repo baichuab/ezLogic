@@ -37,31 +37,41 @@ source ──► extract.py ──► Extraction ──► build.py ──► Pr
 
 ### 1. Extraction (`extract.py`)
 
-The source is sent to the Lean REPL (via `lean-interact`) as one command, `import Lean` followed by
-the source, with two REPL options switched on:
+The source is sent to the Lean REPL (via `lean-interact`) as one command:
+
+```
+import Lean        ← added so the metaprogram below can use Lean's API
+<the source>
+<metaprogram>      ← a short Lean program that prints dependency data as JSON
+```
+
+with two REPL options switched on:
 
 - `all_tactics`: every tactic with its position, the goal before it, and the constants it used;
 - `declarations`: every declaration with its name, kind, position and statement (only the part
   after the colon).
 
-A second command, the metaprogram, runs on the state the source left (`env` of the first
-response). `import Lean` gives it Lean's API. Because it is a separate command, nothing in the
-source can swallow it: an unclosed `/-` comment or an unfinished `by` at the end still leaves the
-dependency data intact. It prints:
+It is one command on purpose. A later command can only continue from a saved state (`env`) while
+the REPL keeps running, and lean-interact restarts the REPL between commands whenever system
+memory is above 80%.
+
+The metaprogram runs after the source, so it can see everything the source defined. It prints:
 
 - **locals:** every constant the source created, with the constants it uses, its source range and
   its full type. This includes the helpers Lean generates behind the scenes (`foo.match_1`,
   `foo.proof_1`, structure projections).
-- **constants:** each library constant those use, plus every constant the tactics used, with its
-  kind (theorem, definition, instance, projection, ...), its statement if it is a theorem, and its
-  *canonical* name. The canonical name maps generated names back to the real lemma:
-  `Nat.add_left_cancel_iff._simp_1` becomes `Nat.add_left_cancel_iff`. The tactics' constants are
-  passed in because a declaration that fails is stored by Lean as `sorry`, so the lemmas its
-  tactics used are missing from its uses.
+- **constants:** each library constant those use, with its kind (theorem, definition, instance,
+  projection, ...), its statement if it is a theorem, and its *canonical* name. The canonical name
+  maps generated names back to the real lemma: `Nat.add_left_cancel_iff._simp_1` becomes
+  `Nat.add_left_cancel_iff`.
 
-If the metaprogram fails, the graph is still built without declaration dependencies. The tactics'
-constants are then classified in a fresh command that only repeats the imports, so steps keep
-their lemmas.
+The end of the source can swallow the metaprogram: an unclosed `/-` comment, or an unfinished
+proof. Then the metaprogram runs again as its own command on the state the source left. If that
+fails too (the REPL restarted meanwhile), the graph is built without declaration dependencies.
+
+A declaration that fails is stored by Lean as `sorry`, so lemmas its tactics used would be missing
+from `constants`. Those are classified with an extra command that only repeats the imports. If it
+fails, the graph is kept without them.
 
 The REPL's `declarations` list skips declarations inside `mutual ... end` blocks; the builder
 recovers them from the locals' ranges: named constants written in the source that aren't part of
@@ -70,8 +80,11 @@ constants Lean gives a range, such as instances made by `deriving` and the parse
 creates.
 
 Because `import Lean` is added as the first line, every position Lean reports is one line too far
-down; `Extraction.line_offset` records this and the builder subtracts it. Lean reports some errors
-at the end of the input; those are moved to the source's last line.
+down; `Extraction.line_offset` records this and the builder subtracts it.
+
+Messages Lean reports past the end of the source belong to the metaprogram and are dropped, unless
+the appended metaprogram produced no output. Then the source swallowed it, so those errors are the
+source's: they are kept, moved to its last line.
 
 ### 2. Building the graph (`build.py`)
 
@@ -79,7 +92,7 @@ at the end of the input; those are moved to the source's last line.
 
 | Kind | One per | Notes |
 | --- | --- | --- |
-| `declaration` | theorem, lemma, def, structure, instance, example | `code` is the exact source text; `statement` is its full type, binders and hypotheses included (`∀ (a b c : Nat), a ≤ b → b ≤ c → …`). Examples have no constant, so theirs is the part after the colon. |
+| `declaration` | theorem, lemma, def, structure, instance, example | `code` is the exact source text; `statement` is its full type, binders and hypotheses included (`∀ (a b c : Nat), a ≤ b → b ≤ c → …`). Examples have no constant, so theirs is the part after the colon. A private declaration is shown by the name it was written with (`p1`, not Lean's `_private.0.p1`). The parsers and macros `notation`, `syntax` and `macro` generate are not declarations, although the REPL reports them as definitions. |
 | `step` | tactic | Nested under the declaration, or under the tactic containing it: the branches of `induction`/`cases`, or the `by` block inside a `have`. Nesting comes from source positions. |
 | `external` | library lemma used | Only real lemmas: definitions, instances, projections, tactic internals (`Lean.*`, `Mathlib.Tactic.*`) and plumbing (`Eq.mpr`, `congrArg`, ...) are left out |
 
@@ -171,9 +184,9 @@ together with `graph.GRAPH_VERSION`, which is bumped whenever the output format 
   module system) fails, because `module` has to come before any import.
 - **Examples in term mode** only link to declarations in the source, not to library lemmas: Lean
   keeps no constant for them, so there is no record of what they use.
-- **Private declarations** have not been checked with Lean yet: if the REPL reports them under a
-  different name than Lean uses internally, their edges are missing (see
-  `test_live_private_declaration`).
+- **Memory:** `agent/lean.py` uses lean-interact's `AutoLeanServer`. It restarts the REPL before a
+  command whenever system memory is above 80%, and gives up after five tries (`MemoryError`). On a
+  machine that is already near 80%, graph builds then fail, or reload `import Lean` every time.
 
 ## Files
 

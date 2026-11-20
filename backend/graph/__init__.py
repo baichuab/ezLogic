@@ -11,7 +11,7 @@ from .extract import Extraction, ExtractionError, extract
 from .model import Edge, LeanMessage, Node, ProofGraph
 
 # Bump when the output changes, so anything caching graphs (e.g. by source hash) rebuilds them.
-GRAPH_VERSION = 4
+GRAPH_VERSION = 5
 
 
 def create_graph_sync(source: str) -> ProofGraph:

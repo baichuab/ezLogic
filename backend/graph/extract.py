@@ -141,16 +141,22 @@ def _meta_output(messages: list[Message]) -> dict | None:
     return next((json.loads(m.data[len(MARKER) :]) for m in messages if m.data.startswith(MARKER)), None)
 
 
-def source_messages(messages: list[Message], last_line: int) -> list[Message]:
+def source_messages(messages: list[Message], last_line: int, meta_ran: bool) -> list[Message]:
     """Lean's messages about the submitted source, whose last line is `last_line` in Lean's
-    numbering. Anything reported past it (Lean reports some errors at the end of the input) is
-    moved to that line, so every message points into the source."""
+    numbering. When the appended metaprogram ran, messages past that line are about the
+    metaprogram and are dropped. When it didn't, the source swallowed it (an unclosed `/-`, an
+    unfinished `by` at the end), so errors past the end are the source's: they are kept, moved to
+    its last line."""
     end = Pos(line=last_line, column=0)
-    return [
-        m if m.start_pos.line <= last_line else m.model_copy(update={"start_pos": end, "end_pos": end})
-        for m in messages
-        if not m.data.startswith(MARKER)
-    ]
+    out = []
+    for m in messages:
+        if m.data.startswith(MARKER):
+            continue
+        if m.start_pos.line <= last_line:
+            out.append(m)
+        elif not meta_ran and m.severity == "error":
+            out.append(m.model_copy(update={"start_pos": end, "end_pos": end}))
+    return out
 
 
 def _run_meta(names: list[str], include_locals: bool, env: int | None, prefix: str = "") -> dict | None:
@@ -169,30 +175,44 @@ def extract(source: str) -> Extraction:
         raise ExtractionError(lean.LEAN_MISSING)
 
     last_line = source.count("\n") + 1 + PRELUDE.count("\n")
-    response = _run(Command(cmd=PRELUDE + source, all_tactics=True, declarations=True))
+    # One command, with the metaprogram after the source. Each further command can only continue
+    # from the saved state (`env`) while the REPL keeps running, and lean-interact restarts it
+    # between commands whenever system memory is above 80%.
+    response = _run(
+        Command(
+            cmd=PRELUDE + source + "\n\n" + _metaprogram([], include_locals=True),
+            all_tactics=True,
+            declarations=True,
+        )
+    )
+    meta = _meta_output(response.messages)
+    meta_ran = meta is not None
+    if not meta_ran:
+        # The end of the source swallowed the metaprogram (an unclosed `/-`, an unfinished `by`).
+        # Run it again on the state the source left; this fails if the REPL restarted meanwhile.
+        meta = _run_meta([], include_locals=True, env=response.env)
+        if meta is None:
+            log.warning("graph metaprogram produced no output; declaration dependencies unavailable")
 
-    # The metaprogram runs as its own command on the state the source left, so nothing in the
-    # source (an unclosed comment, an unfinished `by` at the end) can swallow it. The constants
-    # the tactics used are passed in, so lemmas used by failed declarations (stored as `sorry`,
-    # so missing from their constants' uses) are classified too.
-    used = sorted({c for t in response.tactics for c in t.used_constants})
-    meta = _run_meta(used, include_locals=True, env=response.env)
-    if meta is not None:
-        local_constants, constants = {x["name"]: x for x in meta["locals"]}, meta["constants"]
-    else:
-        log.warning("graph metaprogram produced no output; declaration dependencies unavailable")
-        # Still classify the tactics' lemmas, in a fresh command that only repeats the imports.
-        header = PRELUDE + import_header(source) + "\n\n"
-        local_constants, constants = None, (_run_meta(used, False, None, header) or {}).get("constants", [])
-    return Extraction(
+    ex = Extraction(
         declarations=[
             Declaration(name=d.full_name, kind=d.kind, range=d.range, statement=d.type and d.type.pp)
             for d in response.declarations
+            if d.range.start.line <= last_line
         ],
-        tactics=response.tactics,
-        messages=source_messages(response.messages, last_line),
-        local_constants=local_constants,
-        # `used` includes the source's own constants; those are described by `local_constants`.
-        constants={x["name"]: x for x in constants if x["name"] not in (local_constants or ())},
+        tactics=[t for t in response.tactics if t.start_pos.line <= last_line],
+        messages=source_messages(response.messages, last_line, meta_ran),
+        local_constants=meta and {x["name"]: x for x in meta["locals"]},
+        constants=meta and {x["name"]: x for x in meta["constants"]} or {},
         lean_version=meta and meta["lean_version"],
     )
+
+    # A failed declaration is stored as `sorry`, so lemmas its tactics used are not in `constants`
+    # yet. Classify them in a fresh command that only repeats the imports (no saved state needed).
+    known = set(ex.constants) | set(ex.local_constants or ())
+    missing = sorted({c for t in ex.tactics for c in t.used_constants} - known)
+    if missing:
+        header = PRELUDE + import_header(source) + "\n\n"
+        for x in (_run_meta(missing, False, None, header) or {}).get("constants", []):
+            ex.constants[x["name"]] = ConstantInfo(**x)
+    return ex

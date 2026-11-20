@@ -12,9 +12,9 @@ import pytest
 
 from config import Config
 from graph import Extraction, build_graph, create_graph_sync, extract
-from graph.build import is_interesting
+from graph.build import display_name, is_interesting
 from graph.extract import MARKER, ConstantInfo, source_messages
-from lean_interact.interface import CommandResponse, Message, Pos
+from lean_interact.interface import CommandResponse, LeanError, Message, Pos
 from graph.goals import case_tag, case_tags, continues, hypothesis_names
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -126,13 +126,15 @@ def test_sorry_is_not_ok():
 
 
 def test_errors_past_the_end_are_kept():
-    """Messages Lean reports past the end of the source are moved to its last line; the
-    metaprogram's own output is not a message about the source."""
-    msg = Message(start_pos=Pos(line=4, column=0), severity="error", data="unterminated comment")
+    """An unclosed comment swallows the appended metaprogram; Lean's error is reported inside it."""
+    msg = Message(start_pos=Pos(line=44, column=0), severity="error", data="unterminated comment")
+    info = Message(start_pos=Pos(line=50, column=0), severity="info", data="ignored")
     inside = Message(start_pos=Pos(line=2, column=0), severity="error", data="kept as is")
-    marker = Message(start_pos=Pos(line=1, column=0), severity="info", data=MARKER + "{}")
-    kept = source_messages([inside, msg, marker], last_line=3)
+    marker = Message(start_pos=Pos(line=60, column=0), severity="info", data=MARKER + "{}")
+    kept = source_messages([inside, msg, info, marker], last_line=3, meta_ran=False)
     assert [(m.data, m.start_pos.line) for m in kept] == [("kept as is", 2), ("unterminated comment", 3)]
+    # When the metaprogram ran, anything past the end is about the metaprogram, not the source.
+    assert [m.data for m in source_messages([inside, msg, marker], last_line=3, meta_ran=True)] == ["kept as is"]
 
 
 def test_nesting():
@@ -328,6 +330,49 @@ def test_only_real_declarations_are_recovered():
     assert [n.id for n in graph.nodes if n.kind == "declaration"] == ["decl:P", "decl:ev", "decl:od"]
 
 
+def test_generated_declarations_are_left_out():
+    """The REPL reports the parsers and macros `notation` and `macro` generate as definitions
+    (seen with Lean 4.36); only declarations the source writes become nodes."""
+    source = (
+        'notation "⟪" a "⟫" => Prod.mk a a\n\n'
+        'macro "twice" t:tactic : tactic => `(tactic| ($t; $t))\n\n'
+        "set_option maxHeartbeats 400000 in\n/-- doc -/\n@[simp] private theorem a : 1 = 1 := rfl\n\n"
+        "example : 2 = 2 := rfl\n"
+    )
+    ex = Extraction.model_validate({
+        "declarations": [
+            _decl("«term⟪_⟫»", "definition", (1, 0), (1, 33)),
+            _decl("«_aux___macroRules_term⟪_⟫_1»", "definition", (1, 0), (1, 33)),
+            _decl("_aux___unexpand_Prod_mk_1", "definition", (1, 0), (1, 33)),
+            _decl("tacticTwice_", "definition", (3, 0), (3, 54)),
+            _decl("a", "theorem", (5, 0), (7, 41)),
+            _decl("_example", "example", (9, 0), (9, 22)),
+        ],
+        "tactics": [],
+        "messages": [],
+        "local_constants": None,
+    })
+    assert [n.id for n in build_graph(source, ex).nodes] == ["decl:a", "decl:example"]
+
+
+def test_private_declarations():
+    """Lean names `private theorem p1` `_private.0.p1` (seen with Lean 4.36); the node shows `p1`."""
+    source = "private theorem p1 : 1 = 1 := rfl\ntheorem p2 : 1 = 1 := by\n  exact p1\n"
+    ex = Extraction.model_validate({
+        "declarations": [_decl("_private.0.p1", "theorem", (1, 0), (1, 34)), _decl("p2", "theorem", (2, 0), (3, 10))],
+        "tactics": [_tactic(3, 2, 10, "⊢ 1 = 1", "exact p1", ["_private.0.p1"])],
+        "messages": [],
+        "local_constants": {
+            "_private.0.p1": {"name": "_private.0.p1", "kind": "theorem", "uses": ["rfl"]},
+            "p2": {"name": "p2", "kind": "theorem", "uses": ["_private.0.p1"]},
+        },
+    })
+    graph = build_graph(source, ex)
+    edges = {(e.src, e.dst) for e in graph.edges}
+    assert ("decl:p2", "decl:p1") in edges and ("decl:p2/1", "decl:p1") in edges
+    assert display_name("_private.Foo.Bar.0.Baz.qux") == "Baz.qux" and display_name("Nat.add") == "Nat.add"
+
+
 def _fake_lean(monkeypatch, *responses):
     """Replace the REPL with canned responses (an Exception is raised instead); returns the list of
     commands sent."""
@@ -339,6 +384,8 @@ def _fake_lean(monkeypatch, *responses):
         r = queue.pop(0)
         if isinstance(r, Exception):
             raise r
+        if set(r) == {"message"}:  # the REPL's own error, e.g. "Unknown environment."
+            return LeanError(message=r["message"])
         return CommandResponse.model_validate(r)
 
     monkeypatch.setattr(ext.shutil, "which", lambda _: "lake")
@@ -350,41 +397,67 @@ def _meta_message(meta):
     return {"pos": {"line": 1, "column": 0}, "severity": "info", "data": MARKER + json.dumps(meta)}
 
 
-def test_extract_runs_the_metaprogram_separately(monkeypatch):
-    """The metaprogram runs as its own command on the state the source left, with the tactics'
-    constants passed in, so nothing in the source can swallow it."""
-    source = "theorem t (a b c : Nat) (h1 : a ≤ b) (h2 : b ≤ c) : a ≤ c := by\n  exact Nat.le_trans h1 h2\n"
-    tactic = _tactic(2, 2, 26, "⊢ a ≤ c", "exact Nat.le_trans h1 h2", ["Nat.le_trans", "t"])
-    meta = {
-        "lean_version": "4.0.0",
-        "locals": [{"name": "t", "kind": "theorem", "uses": ["Nat.le_trans"]}],
-        "constants": [_lemma("Nat.le_trans"), _lemma("t")],
-    }
-    sent = _fake_lean(monkeypatch, {"env": 7, "tactics": [tactic]}, {"env": 8, "messages": [_meta_message(meta)]})
-    ex = extract(source)
-    assert sent[0].cmd == "import Lean\n" + source  # nothing appended to the source
-    assert sent[1].env == 7 and "Nat.le_trans" in sent[1].cmd
-    assert set(ex.local_constants) == {"t"}
-    assert set(ex.constants) == {"Nat.le_trans"}  # the source's own constant is a local, not a lemma
+_SOURCE = "theorem t (a b c : Nat) (h1 : a ≤ b) (h2 : b ≤ c) : a ≤ c := by\n  exact Nat.le_trans h1 h2\n"
+_TACTIC = _tactic(2, 2, 26, "⊢ a ≤ c", "exact Nat.le_trans h1 h2", ["Nat.le_trans", "t"])
+_META_OUT = {
+    "lean_version": "4.0.0",
+    "locals": [{"name": "t", "kind": "theorem", "uses": ["Nat.le_trans"]}],
+    "constants": [_lemma("Nat.le_trans")],
+}
+
+
+def test_extract_is_one_command(monkeypatch):
+    """Normally the source and the metaprogram go to Lean as one command, so a REPL restart between
+    commands (lean-interact restarts it when memory is high) can't lose anything."""
+    sent = _fake_lean(monkeypatch, {"env": 7, "tactics": [_TACTIC], "messages": [_meta_message(_META_OUT)]})
+    ex = extract(_SOURCE)
+    assert len(sent) == 1
+    assert sent[0].cmd.startswith("import Lean\n" + _SOURCE + "\n\n") and MARKER in sent[0].cmd
+    assert set(ex.local_constants) == {"t"} and set(ex.constants) == {"Nat.le_trans"}
     assert ex.lean_version == "4.0.0"
 
 
-def test_extract_survives_a_failed_metaprogram(monkeypatch):
-    """If the metaprogram fails, the graph is still built: steps keep their lemmas, classified in a
-    fresh command that only repeats the imports."""
-    source = "import Lean\ntheorem t : True := by\n  trivial\n"
-    meta = {"lean_version": "4.0.0", "locals": [], "constants": [_lemma("True.intro", "constructor")]}
+def test_extract_recovers_a_swallowed_metaprogram(monkeypatch):
+    """When the end of the source swallows the metaprogram, it runs again on the saved state."""
+    swallowed = {"pos": {"line": 40, "column": 0}, "severity": "error", "data": "unterminated comment"}
     sent = _fake_lean(
         monkeypatch,
-        {"env": 7, "tactics": [_tactic(3, 2, 9, "⊢ True", "trivial", ["True.intro"])]},
-        RuntimeError("timeout"),
-        {"env": 9, "messages": [_meta_message(meta)]},
+        {"env": 7, "tactics": [_TACTIC], "messages": [swallowed]},
+        {"env": 8, "messages": [_meta_message(_META_OUT)]},
     )
-    ex = extract(source)
-    assert sent[2].env is None and sent[2].cmd.startswith("import Lean\nimport Lean\n")
+    ex = extract(_SOURCE + "/- oops\n")
+    assert sent[1].env == 7 and MARKER in sent[1].cmd
+    assert set(ex.local_constants) == {"t"}
+    # Moved to the source's last line (line 4, which is 5 in Lean's numbering with `import Lean`).
+    assert [(m.data, m.start_pos.line) for m in ex.messages] == [("unterminated comment", 5)]
+
+
+def test_extract_survives_a_restarted_repl(monkeypatch):
+    """If the saved state is gone (the REPL restarted), the graph is still built without declaration
+    dependencies, and the tactics' lemmas are classified in a fresh command."""
+    sent = _fake_lean(
+        monkeypatch,
+        {"env": 7, "tactics": [_TACTIC], "messages": []},  # metaprogram swallowed
+        {"message": "Unknown environment."},
+        {"env": 9, "messages": [_meta_message({"lean_version": "4.0.0", "locals": [], "constants": [_lemma("Nat.le_trans")]})]},
+    )
+    ex = extract(_SOURCE)
+    assert sent[2].env is None and sent[2].cmd.startswith("import Lean\n")
     assert ex.local_constants is None
-    assert set(ex.constants) == {"True.intro"}
+    assert "Nat.le_trans" in ex.constants
     assert len(ex.tactics) == 1
+
+
+def test_extract_survives_a_failed_classification(monkeypatch):
+    """Classifying the lemmas of failed declarations is optional; if it fails, the graph is kept."""
+    meta = {**_META_OUT, "locals": [], "constants": []}  # `t` failed: its lemmas are missing
+    sent = _fake_lean(
+        monkeypatch,
+        {"env": 7, "tactics": [_TACTIC], "messages": [_meta_message(meta)]},
+        RuntimeError("timeout"),
+    )
+    ex = extract(_SOURCE)
+    assert len(sent) == 2 and ex.lean_version == "4.0.0" and len(ex.tactics) == 1
 
 
 def test_without_metaprogram_output():
@@ -408,19 +481,22 @@ def test_live_lean():
     graph = create_graph_sync("theorem t : 1 = 1 := rfl\n/- oops\n")
     assert not graph.ok
     assert [m.text for m in graph.messages] == ["unterminated comment"]
-    assert graph.lean_version is not None  # the metaprogram still ran
 
-    # An unfinished proof at the end no longer swallows the metaprogram.
+    # An unfinished proof at the end: the graph is still built, with the error on the source.
     graph = create_graph_sync("theorem a : 1 = 1 := rfl\ntheorem b : 1 = 1 := by\n")
-    assert not graph.ok and graph.lean_version is not None
+    assert not graph.ok and "decl:a" in {n.id for n in graph.nodes}
+    assert all(m.start_line <= 3 for m in graph.messages)
 
-    # A derived instance and a notation are not declaration nodes.
-    graph = create_graph_sync('structure P where\n  x : Nat\n  deriving Repr\n\nnotation "⟪" a "⟫" => P.mk a\n')
-    assert [n.id for n in graph.nodes if n.kind == "declaration"] == ["decl:P"]
+    # Derived instances, notation and macros are not declaration nodes; an instance is.
+    graph = create_graph_sync(
+        'structure P where\n  x : Nat\n  deriving Repr\n\nnotation "⟪" a "⟫" => P.mk a\n\n'
+        'macro "twice" t:tactic : tactic => `(tactic| ($t; $t))\n\n'
+        "instance : Inhabited P := ⟨⟨0⟩⟩\n\ntheorem uses_it : (⟪1⟫ : P).x = 1 := by\n  twice rfl\n"
+    )
+    assert [n.id for n in graph.nodes if n.kind == "declaration"] == ["decl:P", "decl:instInhabitedP", "decl:uses_it"]
 
 
 @pytest.mark.skipif(not shutil.which(Config.LAKE_PATH), reason="Lean (lake) is not installed")
-@pytest.mark.xfail(strict=False, reason="unverified: how the REPL names private declarations")
 def test_live_private_declaration():
     graph = create_graph_sync("private theorem p1 : 1 = 1 := rfl\ntheorem p2 : 1 = 1 := p1\n")
     edges = {(e.src, e.dst) for e in graph.edges}
