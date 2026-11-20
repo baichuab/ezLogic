@@ -168,6 +168,30 @@ All fields are documented in `model.py`. Node ids are stable for the same source
 **For storage:** this package stores nothing. To cache graphs, key them by a hash of the source
 together with `graph.GRAPH_VERSION`, which is bumped whenever the output format changes.
 
+## Declaration graph
+
+`declaration_graph(graph)` (`declarations.py`) keeps only the declarations: one entry per
+theorem, lemma, definition, structure or example, each with the declarations it uses directly.
+This is the shape for a table of declarations plus their dependencies (`sum_le → [double,
+double_eq]`).
+
+```python
+decls = declaration_graph(await create_graph(source))
+for d in decls.declarations:          # walkthrough order
+    d.name, d.kind, d.statement, d.depends_on, d.lemmas
+```
+
+- `depends_on` combines the declaration's own `uses` edges with its tactic steps' edges. That
+  keeps the links of a declaration whose proof failed (Lean replaces it with `sorry`) or when the
+  metaprogram did not run.
+- It lists only declarations in the same source, in walkthrough order. Library lemmas are in
+  `lemmas`.
+- Declarations in a `mutual` block depend on each other (`isEven → [isOdd]`, `isOdd → [isEven]`),
+  so the dependencies can form a cycle.
+- Statement and proof uses are not told apart.
+- Examples are named `example`, `example#2`, … by position. Any other name is the declaration's
+  full name.
+
 ## Limitations
 
 - **Mathlib:** the shared REPL in `agent/lean.py` is not set up as a Lake project with Mathlib, so
@@ -194,6 +218,7 @@ together with `graph.GRAPH_VERSION`, which is bumped whenever the output format 
 | --- | --- |
 | `extract.py` | Runs Lean; the metaprogram; `Extraction` |
 | `build.py` | `Extraction` → `ProofGraph` |
+| `declarations.py` | `declaration_graph`: declarations and their direct dependencies |
 | `goals.py` | Reads hypothesis names and case tags from goal states |
 | `model.py` | `ProofGraph`, `Node`, `Edge`, `LeanMessage` |
 | `__main__.py` | Terminal command |

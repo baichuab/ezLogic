@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from config import Config
-from graph import Extraction, build_graph, create_graph_sync, extract
+from graph import Extraction, build_graph, create_graph_sync, declaration_graph, extract
 from graph.build import display_name, is_interesting
 from graph.extract import MARKER, ConstantInfo, source_messages
 from lean_interact.interface import CommandResponse, LeanError, Message, Pos
@@ -458,6 +458,48 @@ def test_extract_survives_a_failed_classification(monkeypatch):
     )
     ex = extract(_SOURCE)
     assert len(sent) == 2 and ex.lean_version == "4.0.0" and len(ex.tactics) == 1
+
+
+def test_declaration_graph():
+    """Declarations only, each with the declarations it uses directly and the lemmas it uses."""
+    graph, _, _ = load("mutual")
+    decls = {d.name: d for d in declaration_graph(graph).declarations}
+    assert {n: d.depends_on for n, d in decls.items()} == {
+        "helper": [],
+        "helper_pos": ["helper"],
+        "isEven": ["isOdd"],  # the `mutual` cycle
+        "isOdd": ["isEven"],
+        "isEven_zero": ["isEven"],
+        "uses_both": ["helper", "helper_pos", "isOdd"],  # in walkthrough order
+    }
+    graph, _, _ = load("basic")
+    decls = {d.name: d for d in declaration_graph(graph).declarations}
+    assert decls["sum_le"].depends_on == ["double", "double_eq"]
+    assert decls["sum_le"].lemmas == ["Nat.le_trans"]  # used by a step, counted for the declaration
+    assert decls["sum_le"].statement.startswith("∀ (a b c : Nat)")
+    assert decls["double"].kind == "definition" and decls["double_eq"].kind == "theorem"
+
+
+@pytest.mark.parametrize("name", ["basic", "branches", "sorry", "mutual"])
+def test_declaration_graph_is_well_formed(name):
+    graph, _, _ = load(name)
+    decls = declaration_graph(graph).declarations
+    assert [d.order_index for d in decls] == sorted(d.order_index for d in decls)
+    by_name = {d.name: d for d in decls}
+    for d in decls:
+        assert set(d.depends_on) <= set(by_name) and d.name not in d.depends_on
+        for dep in d.depends_on:  # dependencies come first, except inside a `mutual` cycle
+            assert by_name[dep].order_index < d.order_index or d.name in by_name[dep].depends_on
+
+
+def test_declaration_graph_counts_steps():
+    """Dependencies found only by tactic steps still count, e.g. when the metaprogram did not run or
+    a failed declaration lost its proof to `sorry`."""
+    source = (FIXTURES / "basic.lean").read_text(encoding="utf-8")
+    ex = Extraction.model_validate_json((FIXTURES / "basic.extraction.json").read_text(encoding="utf-8"))
+    ex.local_constants = None
+    decls = {d.name: d for d in declaration_graph(build_graph(source, ex)).declarations}
+    assert decls["double_add"].depends_on == ["double_eq"]  # from `rw [double_eq, ...]`
 
 
 def test_without_metaprogram_output():

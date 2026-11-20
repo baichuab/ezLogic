@@ -2,11 +2,13 @@
 their dependencies. See README.md.
 
     graph = await create_graph(source)
+    decls = declaration_graph(graph)   # declarations and their direct dependencies only
 """
 
 import asyncio
 
 from .build import build_graph
+from .declarations import DeclarationEntry, DeclarationGraph, declaration_graph
 from .extract import Extraction, ExtractionError, extract
 from .model import Edge, LeanMessage, Node, ProofGraph
 
@@ -25,6 +27,8 @@ async def create_graph(source: str) -> ProofGraph:
 
 __all__ = [
     "GRAPH_VERSION",
+    "DeclarationEntry",
+    "DeclarationGraph",
     "Edge",
     "Extraction",
     "ExtractionError",
@@ -34,5 +38,6 @@ __all__ = [
     "build_graph",
     "create_graph",
     "create_graph_sync",
+    "declaration_graph",
     "extract",
 ]
