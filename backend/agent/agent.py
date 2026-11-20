@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 
 from config import Config
 
+from . import envelope
 from .tools import TOOL_SCHEMAS, run_tool, serialize_result
 from .workspace import Workspace
 
@@ -69,16 +70,18 @@ class AgentResult:
 def turns_to_messages(turns: list[dict]) -> list[dict]:
     """Convert stored turns (rows from db.list_history) into chat messages.
 
-    Each turn needs `query` and `response`; `response` is the Lean source kept
-    for that turn. Other keys (query_id, model, created_at) are ignored.
+    Each turn needs `query` and `response`; `response` is the stored value for
+    that turn (an `envelope` or, for older rows, plain Lean source). Only the
+    Lean is replayed. Other keys (query_id, model, created_at) are ignored.
     """
     messages: list[dict] = []
     for turn in turns:
+        lean, _ = envelope.decode(turn["response"])
         messages.append({"role": "user", "content": turn["query"]})
         messages.append(
             {
                 "role": "assistant",
-                "content": f"Lean code for this request:\n```lean\n{turn['response']}\n```",
+                "content": f"Lean code for this request:\n```lean\n{lean}\n```",
             }
         )
     return messages

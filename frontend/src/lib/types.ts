@@ -167,8 +167,8 @@ export interface HistoryTurn {
 	query: string;
 	response: string;
 	created_at: string;
-	/** Assumed backend addition (B4): the stored explanation, when it differs from `response`. */
-	reply?: string;
+	/** The stored explanation (a ```json `{intro, steps}` block from the explaining agent), or null if none. */
+	reply?: string | null;
 }
 
 export interface HistoryResponse {

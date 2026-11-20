@@ -545,10 +545,11 @@ export function fromDone(ev: AgentDoneEvent): AssistantMessage {
 	const touchedLean = leanFile !== undefined || ev.tool_calls.some((c) => c.name === 'check_lean_snippet');
 	const status = deriveStatus(ev, leanFile);
 
-	// A cache hit's `reply` currently duplicates `response` (the explanation
-	// isn't stored -- see frontend/README.md B4): `reply === response` is a
-	// defensive second check in case `cached` is ever wrong.
-	const explanation = !ev.cached && ev.reply !== ev.response ? ev.reply : '';
+	// A cache hit's `reply` is the stored explanation (a ```json steps block)
+	// when there is one, and otherwise duplicates `response` (older turns
+	// stored before the explaining agent existed): `reply === response` means
+	// "no explanation", for fresh and cached turns alike.
+	const explanation = ev.reply !== ev.response ? ev.reply : '';
 	const base = explanation ? fromReply(explanation, ev.finished) : null;
 
 	const common = {
@@ -561,7 +562,8 @@ export function fromDone(ev: AgentDoneEvent): AssistantMessage {
 	};
 
 	if (base) {
-		return { ...base, ...common, lean: touchedLean ? ev.response : base.lean };
+		// A cache hit has no tool calls, but its `response` is always the stored Lean.
+		return { ...base, ...common, lean: touchedLean || ev.cached ? ev.response : base.lean };
 	}
 
 	return {

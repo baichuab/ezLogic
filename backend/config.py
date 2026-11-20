@@ -39,6 +39,11 @@ class Config:
     # could otherwise each silently cost up to a couple of minutes.
     LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "90"))
 
+    # Explaining agent (agent/explainer.py): turns the writer's final Lean into
+    # step cards that point at line ranges. Empty model = same as the writer's.
+    OPENROUTER_EXPLAIN_MODEL = os.getenv("OPENROUTER_EXPLAIN_MODEL") or None
+    EXPLAIN_TIMEOUT = float(os.getenv("EXPLAIN_TIMEOUT", "60"))
+
     # Sandbox directory the agent is allowed to read/write
     WORKSPACE_DIR = _path("WORKSPACE_DIR", "./workspace")
 

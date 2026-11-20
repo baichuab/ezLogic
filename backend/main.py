@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -12,8 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from agent import AgentResult, ProofAgent, Workspace, WorkspaceError
-from agent import lean
+from agent import AgentResult, ExplainerAgent, ProofAgent, Workspace, WorkspaceError
+from agent import envelope, lean
 from config import Config
 from guest_session import ensure_guest_session
 
@@ -82,8 +83,11 @@ class HistoryTurn(BaseModel):
     query_id: str
     model: str
     query: str
-    response: str
+    response: str  # the Lean source (decoded from the stored envelope)
     created_at: str
+    # The explanation as a ```json {intro, steps} block for the frontend's
+    # fromReply, or None if this turn has no stored explanation.
+    reply: str | None = None
 
 
 class HistoryResponse(BaseModel):
@@ -120,6 +124,33 @@ def _extract_lean(result: AgentResult) -> str | None:
             if isinstance(code, str) and code.strip():
                 snippet = code
     return snippet
+
+
+JSON_FENCE = re.compile(r"```json\s*[\s\S]*?```")
+
+
+def _compose_reply(writer_reply: str, explanation: dict | None) -> str:
+    """The `reply` sent to the frontend.
+
+    With an explanation, the writer's own ```json blocks are dropped (the
+    frontend's fromReply uses the *first* one) and the explanation is appended
+    as the json block it renders as step cards. Without one, the writer's
+    reply is sent unchanged.
+    """
+    if explanation is None:
+        return writer_reply
+    prose = JSON_FENCE.sub("", writer_reply).strip()
+    fence = envelope.explanation_fence(explanation)
+    return f"{prose}\n\n{fence}" if prose else fence
+
+
+def _stored_turn(response: str) -> tuple[str, str]:
+    """`(lean, reply)` for a stored `queries.response`: reply is the explanation's
+    json block, or the Lean itself when there is none (what a cache hit always
+    sent before explanations existed, which the frontend treats as "no reply")."""
+    lean_src, explanation = envelope.decode(response)
+    reply = envelope.explanation_fence(explanation) if explanation else lean_src
+    return lean_src, reply
 
 
 @app.get("/health")
@@ -168,14 +199,15 @@ async def chat(body: ChatRequest, request: Request):
             hit = await db.find_response(user, chat_id, model, body.text)
             if hit is not None:
                 log.info("chat cache hit chat_id=%s query_id=%s", chat_id, hit["query_id"])
+                lean_src, reply = _stored_turn(hit["response"])
                 return _stream(
                     _single(
                         {
                             "type": "done",
                             "cached": True,
                             "query_id": hit["query_id"],
-                            "response": hit["response"],
-                            "reply": hit["response"],
+                            "response": lean_src,
+                            "reply": reply,
                             "finished": True,
                             "tool_calls": [],
                         }
@@ -208,10 +240,39 @@ async def chat(body: ChatRequest, request: Request):
                     finished=event["finished"],
                 )
                 response = _extract_lean(result)
+
+                # Explaining agent: break the final Lean into step cards that
+                # point at line ranges. Runs for unfinished (unverified) runs
+                # too; any failure just leaves the writer's reply as it was.
+                explanation: dict | None = None
+                if response is not None and response.strip():
+                    t1 = time.monotonic()
+                    try:
+                        explainer = ExplainerAgent(Config.OPENROUTER_EXPLAIN_MODEL or model)
+                        async for ev in explainer.stream(
+                            body.text,
+                            response,
+                            writer_reply=result.reply,
+                            tool_calls=result.tool_calls,
+                            finished=result.finished,
+                            history=turns,
+                        ):
+                            if ev["type"] == "explanation":
+                                explanation = ev["explanation"]
+                            else:
+                                yield _sse(ev)
+                    except Exception:
+                        log.exception("chat explainer failed chat_id=%s", chat_id)
+                    log.info(
+                        "chat explained chat_id=%s ok=%s elapsed=%.1fs",
+                        chat_id, explanation is not None, time.monotonic() - t1,
+                    )
+
                 query_id: str | None = None
                 if result.finished and response is not None:
                     query_id = await db.insert_turn(
-                        user, chat_id, model, body.text, response, result.messages
+                        user, chat_id, model, body.text,
+                        envelope.encode(response, explanation), result.messages,
                     )
                 log.info(
                     "chat done chat_id=%s finished=%s saved=%s tool_calls=%d elapsed=%.1fs",
@@ -224,7 +285,7 @@ async def chat(body: ChatRequest, request: Request):
                         "cached": False,
                         "query_id": query_id,
                         "response": response if response is not None else result.reply,
-                        "reply": result.reply,
+                        "reply": _compose_reply(result.reply, explanation),
                         "finished": result.finished,
                         "tool_calls": result.tool_calls,
                     }
@@ -248,7 +309,16 @@ async def history(chat_id: UUID, request: Request):
     except (RuntimeError, psycopg.Error) as e:
         log.error("history db error chat_id=%s: %s", chat_id, e)
         raise HTTPException(status_code=503, detail=f"Database error: {e}")
-    return HistoryResponse(turns=turns)
+    out: list[HistoryTurn] = []
+    for turn in turns:
+        lean_src, explanation = envelope.decode(turn["response"])
+        out.append(
+            HistoryTurn(
+                **{**turn, "response": lean_src},
+                reply=envelope.explanation_fence(explanation) if explanation else None,
+            )
+        )
+    return HistoryResponse(turns=out)
 
 
 def _sse(event: dict) -> str:

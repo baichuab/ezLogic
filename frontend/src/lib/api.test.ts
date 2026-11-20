@@ -498,6 +498,30 @@ describe('fromDone', () => {
 		expect(msg.steps.some((s) => s.explanation.includes(ev.response))).toBe(false);
 	});
 
+	it('renders a cache hit’s stored explanation as steps, keeping its Lean', () => {
+		const ev: AgentDoneEvent = {
+			...base,
+			cached: true,
+			tool_calls: [],
+			response: 'import Mathlib\n\ntheorem t : True := trivial',
+			reply:
+				'```json\n' +
+				JSON.stringify({
+					intro: 'Short proof.',
+					steps: [
+						{ id: 's1', kind: 'theorem', title: 'Statement', summary: 'True holds.', leanLines: [3, 3] }
+					]
+				}) +
+				'\n```'
+		};
+		const msg = fromDone(ev);
+		expect(msg.cached).toBe(true);
+		expect(msg.lean).toBe(ev.response);
+		expect(msg.intro).toBe('Short proof.');
+		expect(msg.steps[0].kind).toBe('theorem');
+		expect(msg.steps[0].leanLines).toEqual([3, 3]);
+	});
+
 	it('parses a ```json steps block from the reply when present', () => {
 		const ev: AgentDoneEvent = {
 			...base,
