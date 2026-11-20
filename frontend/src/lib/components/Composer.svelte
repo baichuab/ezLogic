@@ -1,12 +1,15 @@
 <script lang="ts">
 	let {
 		running = false,
+		allowEmpty = false,
 		onsend,
 		onstop,
 		placeholder = 'Type a theorem, proof sketch or question…'
 	}: {
 		/** True while a proof is being written/checked anywhere (only one run at a time is allowed). */
 		running?: boolean;
+		/** True when a file is attached and ready: lets Send fire with no typed text. */
+		allowEmpty?: boolean;
 		onsend: (text: string) => void;
 		onstop?: () => void;
 		placeholder?: string;
@@ -17,7 +20,7 @@
 
 	function submit() {
 		const t = text.trim();
-		if (!t || running) return;
+		if ((!t && !allowEmpty) || running) return;
 		onsend(t);
 		text = '';
 		queueMicrotask(resize);
@@ -58,7 +61,7 @@
 	<button
 		type={running ? 'button' : 'submit'}
 		onclick={running ? () => onstop?.() : undefined}
-		disabled={!running && !text.trim()}
+		disabled={!running && !text.trim() && !allowEmpty}
 		class="grid size-9 shrink-0 place-items-center rounded-full bg-ink text-paper transition hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-25"
 		aria-label={running ? 'Stop' : 'Send'}
 		title={running ? 'Stop' : 'Send'}

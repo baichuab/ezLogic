@@ -36,7 +36,16 @@ export type VerificationStatus = 'verified' | 'unverified' | 'failed';
 export interface UserMessage {
 	id: string;
 	role: 'user';
+	/** What the user typed (shown in the bubble). */
 	text: string;
+	/** Proof file attached to this message; its extracted text is sent to the agent. */
+	attachment?: { name: string; size: number };
+	/**
+	 * The text actually sent to the agent, when it differs from `text` (an
+	 * attachment's extracted content is appended to it). Resending on retry
+	 * uses this, so a retried turn doesn't silently drop the attached file.
+	 */
+	prompt?: string;
 }
 
 /**
