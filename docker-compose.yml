@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ezlogic
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ezlogic"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    volumes:
+      - workspace:/data/workspace
+      - lean_cache:/data/lean_cache
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 8g
+
+  web:
+    build: ./frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ":80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  workspace:
+  lean_cache:
