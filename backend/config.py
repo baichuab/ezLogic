@@ -42,14 +42,21 @@ class Config:
     # Sandbox directory the agent is allowed to read/write
     WORKSPACE_DIR = _path("WORKSPACE_DIR", "./workspace")
 
-    # Lean CLI (installed via elan)
-    LEAN_PATH = os.getenv("LEAN_PATH", "lean")
+    # Lake (installed via elan); lean-interact uses it to build and run the REPL
     LAKE_PATH = os.getenv("LAKE_PATH", "lake")
     LEAN_TIMEOUT = float(os.getenv("LEAN_TIMEOUT", "120"))
 
     # lean-interact (REPL used for quick snippet checks)
     LEAN_VERSION = os.getenv("LEAN_VERSION") or None  # e.g. "v4.19.0"; None = latest
     LEAN_INTERACT_CACHE = _path("LEAN_INTERACT_CACHE", "./.lean_cache")
+    # REPL repository lean-interact builds. The official repo tags every Lean
+    # release (e.g. `v4.37.0-rc1`); lean-interact's default fork often lags behind
+    # new Mathlib toolchains. LEAN_REPL_REV empty = the tag matching the
+    # workspace's `lean-toolchain`.
+    LEAN_REPL_GIT = os.getenv(
+        "LEAN_REPL_GIT", "https://github.com/leanprover-community/repl"
+    )
+    LEAN_REPL_REV = os.getenv("LEAN_REPL_REV") or None
     # Safety ceiling for starting the REPL and loading Mathlib into it the first time
     # (can take a minute or more); LEAN_TIMEOUT applies to each check after that.
     LEAN_STARTUP_TIMEOUT = float(os.getenv("LEAN_STARTUP_TIMEOUT", "180"))

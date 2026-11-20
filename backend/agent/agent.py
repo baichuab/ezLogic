@@ -33,8 +33,9 @@ You work inside a local workspace directory and have tools to list, read, write,
 delete files, and to verify Lean code:
 - check_lean_snippet: fast check of a short self-contained snippet in a Lean REPL. Mathlib is \
 already imported for you in this REPL; any `import` line you include is ignored, not an error.
-- check_lean_file: compile a .lean file in the workspace with the Lean CLI. Start the file with \
-`import Mathlib`.
+- check_lean_file: check a .lean file in the workspace, in the same REPL. Start the file with \
+`import Mathlib`; only Mathlib, Std, Lean and Batteries imports are supported. A proof is only \
+verified once check_lean_file returns ok=true on the final file.
 
 Write Lean 4 only. This is NOT Lean 3: never write `begin ... end`, never separate tactics with \
 commas, never write a tactic block as `{ ... }`. Tactics are separated by newlines (or `<;>`). \
