@@ -43,8 +43,5 @@ class Config:
 
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
-    # Postgres (Supabase session pooler URI)
-    DATABASE_URL = os.getenv("DATABASE_URL", "")
-
 
 Config.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)

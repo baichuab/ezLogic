@@ -1,31 +1,15 @@
-from contextlib import asynccontextmanager
-from uuid import UUID
-
-import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from psycopg_pool import PoolTimeout
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-import db
 from agent import ProofAgent, Workspace, WorkspaceError
 from agent import lean
 from config import Config
-
-
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    if Config.DATABASE_URL:
-        await db.open_pool()
-    yield
-    await db.close_pool()
-
 
 app = FastAPI(
     title=Config.API_TITLE,
     description="LLM-powered Lean proof writing and verification",
     version=Config.API_VERSION,
-    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -40,17 +24,16 @@ workspace = Workspace(Config.WORKSPACE_DIR)
 
 
 class ChatRequest(BaseModel):
-    user_id: str
-    chat_id: UUID  # created once per chat by the UI
-    text: str
-    model: str | None = None  # defaults to OPENROUTER_MODEL
-    allowBuild: bool = False  # true = always call the model, even if this text is cached
+    message: str
+    history: list[dict] = []  # `messages` returned by the previous /api/chat call
+    model: str | None = None  # override OPENROUTER_MODEL
 
 
 class ChatResponse(BaseModel):
-    query_id: UUID | None  # None when the turn wasn't saved (no Lean code / step limit hit)
-    response: str  # Lean source; the agent's text reply when no Lean code was produced
-    cached: bool
+    reply: str
+    messages: list[dict]
+    tool_calls: list[dict]
+    finished: bool
 
 
 class SnippetRequest(BaseModel):
@@ -68,32 +51,13 @@ async def health_check():
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Run the proof agent for one user turn, reusing a cached answer when allowed."""
-    model = request.model or Config.OPENROUTER_MODEL
+    """Run the proof agent for one user turn."""
     try:
-        if not request.allowBuild:
-            hit = await db.find_cached(request.user_id, request.chat_id, model, request.text)
-            if hit:
-                return ChatResponse(query_id=hit["query_id"], response=hit["response"], cached=True)
-
-        history = await db.latest_messages(request.user_id, request.chat_id)
-        try:
-            agent = ProofAgent(workspace, model=model)
-        except RuntimeError as e:
-            raise HTTPException(status_code=503, detail=str(e))
-        result = await agent.run(request.text, history)
-
-        lean_code = db.extract_lean(result, workspace)
-        if not result.finished or lean_code is None:
-            # Not saved, so the next turn's history won't include this one.
-            return ChatResponse(query_id=None, response=result.reply, cached=False)
-
-        query_id = await db.save_turn(
-            request.user_id, request.chat_id, model, request.text, lean_code, result.messages
-        )
-        return ChatResponse(query_id=query_id, response=lean_code, cached=False)
-    except (psycopg.Error, PoolTimeout, RuntimeError) as e:
-        raise HTTPException(status_code=503, detail=f"Database unavailable: {e}")
+        agent = ProofAgent(workspace, model=request.model)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    result = await agent.run(request.message, request.history)
+    return ChatResponse(**result.__dict__)
 
 
 @app.get("/api/files")
