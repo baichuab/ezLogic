@@ -21,8 +21,12 @@ class Config:
 
     # OpenRouter (OpenAI-compatible API)
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
+    OPENROUTER_BASE_URL = os.getenv(
+        "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+    )
+    OPENROUTER_MODEL = os.getenv(
+        "OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free"
+    )
     AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "20"))
 
     # Sandbox directory the agent is allowed to read/write
