@@ -1,56 +1,64 @@
-# sv
+# ezLogic Frontend
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
-
-## Creating a project
-
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
-
-```sh
-# recreate this project
-npx sv@1.6.0 create --template minimal --types ts --add tailwindcss="plugins:none" --install npm frontend
-```
-
-## Adding features
-
-Add features to your project with `sv add`:
-
-```sh
-npx sv add
-```
-
-For example, to add Tailwind CSS:
-
-```sh
-npx sv add tailwindcss
-```
+SvelteKit chat UI for the ezLogic Lean proof agent (see the root `README.md` for the full
+project). Talks to the FastAPI backend in `../backend`.
 
 ## Developing
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+Requires Node 22 (see `.nvmrc`; run `nvm use`).
 
 ```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
+npm install
+npm run dev          # http://localhost:5173, proxies /api to the backend (see vite.config.ts)
 ```
+
+By default `npm run dev` expects the backend on `http://localhost:8000` (see
+`backend/README.md`). Override the proxy target with `API_PROXY_TARGET`, or set `VITE_MOCK=1`
+(see `.env.example`) to run the UI against a built-in demo proof with no backend at all.
+
+## Testing
+
+```sh
+npm run check        # svelte-check (types)
+npm run test          # vitest: src/lib/api.test.ts
+```
+
+`src/lib/api.ts` is unit tested because it's where most of the risk in the frontend lives: it
+turns an SSE stream that can arrive in arbitrary chunks into chat messages, and it alone decides
+whether a proof is shown as "Verified" -- that decision must come only from what a Lean tool call
+actually returned, never from the model's own say-so. See the test names in `api.test.ts` for the
+specific cases covered (chunk splitting, UTF-8 boundaries, error-body shapes, and the
+verification-status truth table).
 
 ## Building
 
-To create a production version of your app:
-
 ```sh
 npm run build
+npm run preview       # serve the production build locally
 ```
 
-You can preview the production build with `npm run preview`.
+`adapter-auto` is used for now; pick a real adapter before deploying (see
+[the SvelteKit docs](https://svelte.dev/docs/kit/adapters)).
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+## Backend contract
+
+The frontend's `src/lib/types.ts` ("Backend wire types" section) and `src/lib/api.ts` mirror the
+backend's actual HTTP/SSE contract, documented in `../database/README.md` and
+`../backend/README.md`. Some fields the frontend uses aren't implemented by the backend yet; they
+are marked `// assumed backend addition (B#)` in the code and are optional in the types, with the
+frontend deriving the same information itself (from the agent's tool-call trace) when the field
+is absent. Backend changes should either implement these or let this list be updated instead.
+
+| # | Assumption | Frontend fallback until it exists |
+| --- | --- | --- |
+| B1 | `POST /api/session` returns `200 {guest_id, expires_at, created}` instead of `204` | Can't tell a known guest from a new one; a chat list (future work) would need to detect an empty history instead |
+| B2 | `done.verified: boolean` on `POST /api/chat`'s final SSE event | Derived from `done.tool_calls` (`api.ts`'s `deriveVerified`): the *last* `check_lean_file` call on the Lean file actually written wins, or the last `check_lean_snippet` call if no file was touched |
+| B3 | `done.lean_file?: string` | The last `.lean` path touched by `write_file`/`edit_file`/`check_lean_file` in `tool_calls` (`extractLeanFile`) |
+| B4 | The agent's prose explanation (`reply`) is stored, so a cache hit's `reply` is the real explanation, and `GET /api/history` turns include it too | When `reply` is missing or equals `response` (true for every cache hit today, since `reply` just duplicates the Lean source), the UI shows a generic "Cached result" / "Lean proof" card with no explanation |
+| B5 | The agent's final reply contains a &#96;&#96;&#96;json &#123;steps, intro?, lean?&#125; block (shape in `fromReply`) | A single "Response" step built from the whole reply, with the first &#96;&#96;&#96;lean&#96;&#96;&#96; fence (if any) as its code |
+| B6 | `tool_call_start.id` is never empty | Matched to its `tool_result` by order instead (oldest still-running call with the same name) |
+| B7 | The backend agent run stops promptly when the client disconnects (for a future Stop button) | None needed client-side; the backend just keeps running unseen |
+| B8 | A "list my chats" endpoint | The chat list lives in `localStorage` (not yet implemented) |
+
+Everything else in `AgentEvent`/`ChatRequest`/`HistoryTurn` (`types.ts`) is already how the
+backend behaves as of the `agentStreaming` branch merge.

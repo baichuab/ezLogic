@@ -1,7 +1,17 @@
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { fade, fly } from 'svelte/transition';
-	import { isMockMode, sendMessage } from '#lib/api.js';
+	import {
+		ApiError,
+		applyEvent,
+		emptyLiveMessage,
+		ensureSession,
+		fromDone,
+		getHistory,
+		isMockMode,
+		newChatId,
+		streamChat
+	} from '#lib/api.js';
 	import { demoChats } from '#lib/mock.js';
 	import type { AssistantMessage, Chat } from '#lib/types.js';
 	import Brace from '#lib/components/Brace.svelte';
@@ -10,15 +20,43 @@
 	import Sidebar from '#lib/components/Sidebar.svelte';
 	import StepDetail from '#lib/components/StepDetail.svelte';
 
+	/** Friendlier wording than the raw tool name for the "what's happening" indicator. */
+	const TOOL_LABEL: Record<string, string> = {
+		check_lean_file: 'Checking the proof with Lean…',
+		check_lean_snippet: 'Checking a snippet with Lean…',
+		write_file: 'Writing the proof…',
+		edit_file: 'Updating the proof…',
+		read_file: 'Reading the workspace…',
+		list_files: 'Looking at the workspace…',
+		delete_file: 'Cleaning up…'
+	};
+
 	// ---- state ---------------------------------------------------------------
-	let chats = $state<Chat[]>(demoChats());
+	let chats = $state<Chat[]>(isMockMode ? demoChats() : []);
 	let activeId = $state<string | null>(chats[0]?.id ?? null);
 	let selection = $state<{ messageId: string; stepId: string } | null>(null);
 	let showLean = $state(false);
 	let sidebarPinned = $state(true);
 	let drawerOpen = $state(false);
 	let busy = $state(false);
+	let busyText = $state('Writing and checking the Lean proof…');
 	let error = $state<{ text: string; message: string } | null>(null);
+	/** Set when the guest session bootstrap (POST /api/session) fails. */
+	let sessionError = $state<string | null>(null);
+
+	onMount(() => {
+		if (isMockMode) return;
+		ensureSession().catch((e) => {
+			sessionError = e instanceof Error ? e.message : String(e);
+		});
+	});
+
+	function retrySession() {
+		sessionError = null;
+		ensureSession().catch((e) => {
+			sessionError = e instanceof Error ? e.message : String(e);
+		});
+	}
 
 	const active = $derived(chats.find((c) => c.id === activeId) ?? null);
 	const selectedMessage = $derived(
@@ -50,11 +88,18 @@
 		selection = null;
 	}
 
-	function openChat(id: string) {
+	async function openChat(id: string) {
 		activeId = id;
 		selection = null;
 		drawerOpen = false;
 		error = null;
+		const chat = chats.find((c) => c.id === id);
+		if (!chat || chat.messages.length > 0 || isMockMode) return;
+		try {
+			chat.messages = await getHistory(id);
+		} catch (e) {
+			error = { text: '', message: e instanceof Error ? e.message : String(e) };
+		}
 	}
 
 	function newChat() {
@@ -69,10 +114,9 @@
 		let chat = active;
 		if (!chat) {
 			chat = {
-				id: `c-${Date.now().toString(36)}`,
+				id: newChatId(),
 				title: text.length > 48 ? text.slice(0, 47) + '…' : text,
 				messages: [],
-				history: [],
 				updatedAt: Date.now()
 			};
 			chats.unshift(chat);
@@ -83,14 +127,26 @@
 		scrollToBottom();
 
 		busy = true;
+		busyText = 'Writing and checking the Lean proof…';
+		// Filled in live from `token`/`tool_*` events so `busyText` can reflect
+		// progress; discarded once `fromDone` builds the real message. Not
+		// rendered yet (see frontend/README.md Phase 2 for the live view).
+		let live = emptyLiveMessage(`live-${Date.now().toString(36)}`);
 		try {
-			const res = await sendMessage(text, chat.history);
-			chat.messages.push(res.message);
-			chat.history = res.history;
-			chat.updatedAt = Date.now();
+			for await (const ev of streamChat(chat.id, text)) {
+				if (ev.type === 'done') {
+					chat.messages.push(fromDone(ev));
+					chat.updatedAt = Date.now();
+				} else {
+					live = applyEvent(live, ev);
+					if (ev.type === 'tool_call_start') busyText = TOOL_LABEL[ev.name] ?? `Running ${ev.name}…`;
+				}
+			}
 			scrollToBottom();
 		} catch (e) {
-			error = { text, message: e instanceof Error ? e.message : String(e) };
+			if (!(e instanceof ApiError && e.kind === 'aborted')) {
+				error = { text, message: e instanceof Error ? e.message : String(e) };
+			}
 		} finally {
 			busy = false;
 		}
@@ -206,6 +262,19 @@
 			{/if}
 		</header>
 
+		{#if sessionError}
+			<div
+				class="mx-3 mb-2 flex items-center gap-3 rounded-xl border border-warn/30 bg-warn-soft px-4 py-2.5 text-sm text-warn"
+				role="alert"
+				transition:fade={{ duration: 120 }}
+			>
+				<span class="flex-1">Can't reach the server: {sessionError}</span>
+				<button type="button" onclick={retrySession} class="font-medium underline underline-offset-2">
+					Retry
+				</button>
+			</div>
+		{/if}
+
 		<!-- Conversation + detail split -->
 		<div class="flex min-h-0 flex-1 gap-0 px-3 lg:px-4">
 			<section
@@ -267,7 +336,7 @@
 										<span class="size-1.5 animate-bounce rounded-full bg-muted [animation-delay:120ms]"></span>
 										<span class="size-1.5 animate-bounce rounded-full bg-muted [animation-delay:240ms]"></span>
 									</span>
-									Writing and checking the Lean proof…
+									{busyText}
 								</div>
 							{/if}
 
