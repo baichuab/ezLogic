@@ -1,16 +1,30 @@
-from fastapi import Depends, FastAPI, HTTPException, Response
+from contextlib import asynccontextmanager
+from uuid import UUID
+
+import psycopg
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from agent import ProofAgent, Workspace, WorkspaceError
+from agent import AgentResult, ProofAgent, Workspace, WorkspaceError
 from agent import lean
 from config import Config
 from guest_session import ensure_guest_session
+
+import db
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await db.init_db()
+    yield
+
 
 app = FastAPI(
     title=Config.API_TITLE,
     description="LLM-powered Lean proof writing and verification",
     version=Config.API_VERSION,
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -23,18 +37,32 @@ app.add_middleware(
 
 workspace = Workspace(Config.WORKSPACE_DIR)
 
+LEAN_FILE_TOOLS = {"check_lean_file", "write_file", "edit_file"}
+
 
 class ChatRequest(BaseModel):
-    message: str
-    history: list[dict] = []  # `messages` returned by the previous /api/chat call
+    chat_id: UUID
+    text: str
     model: str | None = None  # override OPENROUTER_MODEL
+    allowBuild: bool = False
 
 
 class ChatResponse(BaseModel):
-    reply: str
-    messages: list[dict]
-    tool_calls: list[dict]
-    finished: bool
+    query_id: str | None
+    response: str
+    cached: bool
+
+
+class HistoryTurn(BaseModel):
+    query_id: str
+    model: str
+    query: str
+    response: str
+    created_at: str
+
+
+class HistoryResponse(BaseModel):
+    turns: list[HistoryTurn]
 
 
 class SnippetRequest(BaseModel):
@@ -43,6 +71,30 @@ class SnippetRequest(BaseModel):
 
 class FileRequest(BaseModel):
     path: str
+
+
+def _user_id(request: Request) -> str:
+    """Guest id (JWT `sub`) set by ensure_guest_session."""
+    return request.state.guest_id
+
+
+def _extract_lean(result: AgentResult) -> str | None:
+    """Lean source produced by this run, per database/README.md."""
+    snippet: str | None = None
+    for call in reversed(result.tool_calls):
+        name = call.get("name")
+        args = call.get("arguments") or {}
+        path = args.get("path")
+        if name in LEAN_FILE_TOOLS and isinstance(path, str) and path.endswith(".lean"):
+            try:
+                return workspace.read_file(path)
+            except WorkspaceError:
+                continue
+        if name == "check_lean_snippet" and snippet is None:
+            code = args.get("code")
+            if isinstance(code, str) and code.strip():
+                snippet = code
+    return snippet
 
 
 @app.get("/health")
@@ -65,14 +117,59 @@ async def start_guest_session() -> None:
     response_model=ChatResponse,
     dependencies=[Depends(ensure_guest_session)],
 )
-async def chat(request: ChatRequest):
-    """Run the proof agent for one user turn."""
+async def chat(body: ChatRequest, request: Request):
+    """Run the proof agent for one user turn, using the Postgres cache."""
+    user = _user_id(request)
+    chat_id = str(body.chat_id)
+    model = body.model or Config.OPENROUTER_MODEL
+
     try:
-        agent = ProofAgent(workspace, model=request.model)
+        if not body.allowBuild:
+            hit = await db.find_response(user, chat_id, model, body.text)
+            if hit is not None:
+                return ChatResponse(
+                    query_id=hit["query_id"], response=hit["response"], cached=True
+                )
+
+        turns = await db.list_history(user, chat_id)
+    except (RuntimeError, psycopg.Error) as e:
+        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+
+    try:
+        agent = ProofAgent(workspace, model=model)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    result = await agent.run(request.message, request.history)
-    return ChatResponse(**result.__dict__)
+    result = await agent.run(body.text, turns)
+
+    response = _extract_lean(result)
+    query_id: str | None = None
+    if result.finished and response is not None:
+        try:
+            query_id = await db.insert_turn(
+                user, chat_id, model, body.text, response, result.messages
+            )
+        except (RuntimeError, psycopg.Error) as e:
+            raise HTTPException(status_code=503, detail=f"Database error: {e}")
+
+    return ChatResponse(
+        query_id=query_id,
+        response=response if response is not None else result.reply,
+        cached=False,
+    )
+
+
+@app.get(
+    "/api/history",
+    response_model=HistoryResponse,
+    dependencies=[Depends(ensure_guest_session)],
+)
+async def history(chat_id: UUID, request: Request):
+    """Every stored turn for this guest and chat, oldest first."""
+    try:
+        turns = await db.list_history(_user_id(request), str(chat_id))
+    except (RuntimeError, psycopg.Error) as e:
+        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+    return HistoryResponse(turns=turns)
 
 
 @app.get("/api/files")

@@ -2,7 +2,7 @@
 
 Postgres stores each chat turn and the Lean code produced for it. The cache is a lookup on those rows. There is no separate cache key.
 
-`POST /api/chat` and `GET /api/history` live in `backend/main.py`. The SQL lives in `backend/db.py`. `ProofAgent.run` in `backend/agent/agent.py` stays unchanged.
+`POST /api/chat` and `GET /api/history` live in `backend/main.py`. The SQL lives in `backend/db.py`. `ProofAgent.run` in `backend/agent/agent.py` takes the `list_history` rows as `history`.
 
 `user_token` is the JWT the client sends. The column stores that token, and every lookup matches it exactly. The UI creates `chat_id` once per chat. It does not send `query_id`. A picked file is read in the browser and sent as `text`.
 
@@ -30,9 +30,9 @@ Postgres stores each chat turn and the Lean code produced for it. The cache is a
 
 `response` is the Lean source the UI shows.
 
-### `GET /api/history?user_token=<jwt>&chat_id=<uuid>`
+### `GET /api/history?chat_id=<uuid>`
 
-Calls `list_history`. `chat()` does not. An empty chat returns `"turns": []`.
+Calls `list_history`. `chat()` calls it too, for the agent's history. The user comes from the guest JWT cookie (`sub`). An empty chat returns `"turns": []`.
 
 ```json
 {
@@ -80,24 +80,11 @@ create index chat_turns_user_idx
 | `model` | Model passed to `ProofAgent`. |
 | `query` | The exact `text` from the request. |
 | `response` | The Lean source, read after the run. |
-| `messages` | `AgentResult.messages`. The next model call for this chat passes the latest value back as `history`. Not sent in the HTTP response. |
+| `messages` | `AgentResult.messages`: this turn's transcript only (user message, tool calls, replies). Kept for debugging. Not sent in the HTTP response and not used as history. |
 
 `allowBuild: true` inserts a new `query_id` even when the same text already exists. The older row stays. With `allowBuild` false, `find_response` returns the newest of those rows.
 
 ## `backend/db.py`
-
-### `latest_messages(user_token, chat_id)`
-
-Returns the newest `messages` for this chat, or `[]`. `chat()` passes that list to `agent.run` as `history`.
-
-```sql
-select q.messages
-from chat_turns t
-join queries q on q.query_id = t.query_id
-where t.user_token = %s and t.chat_id = %s
-order by t.created_at desc
-limit 1
-```
 
 ### `find_response(user_token, chat_id, model, query)`
 
@@ -130,7 +117,7 @@ values (%s, %s, %s);
 
 ### `list_history(user_token, chat_id)`
 
-Returns every turn for that token and chat, oldest first. `GET /api/history` calls it.
+Returns every turn for that token and chat, oldest first. `GET /api/history` and `chat()` call it. `agent.run` turns each row into a user message (`query`) and an assistant message (`response`).
 
 ```sql
 select q.query_id, q.model, q.query, q.response, t.created_at
@@ -144,13 +131,14 @@ order by t.created_at
 
 Read `allowBuild` first.
 
-**`allowBuild` is true.** Call `latest_messages`. Call the model with that history. Read the Lean code. Call `insert_turn`.
+**`allowBuild` is true.** Call `list_history`. Call the model with that history. Read the Lean code. Call `insert_turn`.
 
-**`allowBuild` is false.** Call `find_response`. A row means return that `query_id` and `response` with `cached: true`. Do not call the model. No row means call `latest_messages`, call the model, read the Lean code, and call `insert_turn`. A new chat has no `chat_turns` rows, so both lookups miss and the call is `agent.run(text, [])`. The same text under another `chat_id` misses too.
+**`allowBuild` is false.** Call `find_response`. A row means return that `query_id` and `response` with `cached: true`. Do not call the model. No row means call `list_history`, call the model, read the Lean code, and call `insert_turn`. A new chat has no `chat_turns` rows, so both lookups miss and the call is `agent.run(text, [])`. The same text under another `chat_id` misses too.
 
 ```python
 agent = ProofAgent(workspace, model=model)
-result = await agent.run(text, history)
+turns = await list_history(user_token, chat_id)
+result = await agent.run(text, turns)
 ```
 
 `result.reply` is the model's explanation. It is not stored. Walk `result.tool_calls` from last to first:
@@ -164,4 +152,4 @@ Every request uses the single workspace created in `main.py`. Read the `.lean` f
 
 ## Wiring
 
-Add `psycopg[binary]` to `backend/requirements.txt` and `DATABASE_URL` to `backend/.env`. Put the four methods in `backend/db.py`. Replace the body of `chat()` in `backend/main.py` with the checks above, and add `GET /api/history`.
+Add `psycopg[binary]` to `backend/requirements.txt` and `DATABASE_URL` to `backend/.env`. Put the three methods in `backend/db.py`. Replace the body of `chat()` in `backend/main.py` with the checks above, and add `GET /api/history`.
