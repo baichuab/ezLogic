@@ -8,9 +8,9 @@ import type {
 	HistoryResponse,
 	HistoryTurn,
 	LeanToolResult,
+	LiveItem,
 	ProofStep,
 	StepKind,
-	ToolActivity,
 	ToolCall,
 	UserMessage
 } from './types';
@@ -179,6 +179,25 @@ export interface StreamChatOptions {
 	signal?: AbortSignal;
 }
 
+/** Resolves after `ms`, or rejects with an `aborted` `ApiError` as soon as `signal` fires. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(new ApiError('aborted', 'Request aborted'));
+			return;
+		}
+		const timer = setTimeout(resolve, ms);
+		signal?.addEventListener(
+			'abort',
+			() => {
+				clearTimeout(timer);
+				reject(new ApiError('aborted', 'Request aborted'));
+			},
+			{ once: true }
+		);
+	});
+}
+
 /** Run one user turn. Yields each stream event in order; throws `ApiError` on any failure. */
 export async function* streamChat(
 	chatId: string,
@@ -186,8 +205,11 @@ export async function* streamChat(
 	opts: StreamChatOptions = {}
 ): AsyncGenerator<AgentEvent> {
 	if (isMockMode) {
-		await new Promise((r) => setTimeout(r, 500));
-		for (const ev of mockEvents()) yield ev;
+		for (const { event, delay } of mockEvents(text)) {
+			await sleep(delay, opts.signal);
+			if (event.type === 'error') throw new ApiError('stream', event.detail);
+			yield event;
+		}
 		return;
 	}
 
@@ -270,7 +292,7 @@ export async function getHistory(chatId: string, signal?: AbortSignal): Promise<
 // Live message updates (`token` / `tool_call_start` / `tool_result`)
 
 export function emptyLiveMessage(id: string): AssistantMessage {
-	return { id, role: 'assistant', status: 'unverified', steps: [], live: { text: '', activity: [] } };
+	return { id, role: 'assistant', status: 'unverified', steps: [], live: { state: 'streaming', items: [] } };
 }
 
 /**
@@ -294,44 +316,85 @@ function toolTarget(args: Record<string, unknown>): string | undefined {
 	return typeof args.path === 'string' ? args.path : undefined;
 }
 
-/** Index of the activity entry a `tool_result` event belongs to, or -1 if there isn't one yet. */
-function matchActivityIndex(activity: ToolActivity[], id: string, name: string): number {
+/** Index of the tool item a `tool_result` event belongs to, or -1 if there isn't one yet. */
+function matchToolIndex(items: LiveItem[], id: string, name: string): number {
 	if (id) {
-		const i = activity.findIndex((a) => a.id === id);
+		const i = items.findIndex((it) => it.kind === 'tool' && it.id === id);
 		if (i !== -1) return i;
 	}
 	// Some backend tool calls don't carry an id when they're announced (see
 	// frontend/README.md B6); match the oldest still-running call with the
 	// same name instead.
-	return activity.findIndex((a) => a.state === 'running' && a.name === name);
+	return items.findIndex((it) => it.kind === 'tool' && it.state === 'running' && it.name === name);
 }
 
-/** Apply one streamed event to a message that still has a `live` draft. A `done`/`error` event is ignored: use `fromDone` instead. */
+/**
+ * Apply one streamed event to a message whose `live.state` is `'streaming'`.
+ * A no-op once the draft has been stopped or errored, or once `done` has
+ * already replaced it (no `live` at all): events can still be in flight when
+ * the user clicks Stop, or after the stream itself reports an error.
+ *
+ * Consecutive `token`s merge into one text item; a token right after a tool
+ * item starts a new one, so the timeline reads as alternating commentary and
+ * tool steps in the order they actually happened.
+ */
 export function applyEvent(msg: AssistantMessage, ev: AgentEvent): AssistantMessage {
-	if (!msg.live) return msg;
+	if (!msg.live || msg.live.state !== 'streaming') return msg;
 	const live = msg.live;
+
 	if (ev.type === 'token') {
-		return { ...msg, live: { ...live, text: live.text + ev.content } };
+		const items = [...live.items];
+		const last = items.at(-1);
+		if (last?.kind === 'text') {
+			items[items.length - 1] = { ...last, text: last.text + ev.content };
+		} else {
+			items.push({ kind: 'text', text: ev.content });
+		}
+		return { ...msg, live: { ...live, items } };
 	}
+
 	if (ev.type === 'tool_call_start') {
 		return {
 			...msg,
-			live: { ...live, activity: [...live.activity, { id: ev.id, name: ev.name, state: 'running' }] }
+			live: { ...live, items: [...live.items, { kind: 'tool', id: ev.id, name: ev.name, state: 'running' }] }
 		};
 	}
+
 	if (ev.type === 'tool_result') {
-		const entry: ToolActivity = {
+		const entry: LiveItem = {
+			kind: 'tool',
 			id: ev.id,
 			name: ev.name,
 			state: toolSucceeded(ev.result) ? 'ok' : 'failed',
 			target: toolTarget(ev.arguments)
 		};
-		const i = matchActivityIndex(live.activity, ev.id, ev.name);
-		const activity =
-			i === -1 ? [...live.activity, entry] : live.activity.map((a, idx) => (idx === i ? entry : a));
-		return { ...msg, live: { ...live, activity } };
+		const i = matchToolIndex(live.items, ev.id, ev.name);
+		const items = i === -1 ? [...live.items, entry] : live.items.map((it, idx) => (idx === i ? entry : it));
+		return { ...msg, live: { ...live, items } };
 	}
+
 	return msg;
+}
+
+/** Close a draft that was stopped by the user or hit a stream error, keeping whatever already arrived. A no-op if the message has no `live` draft (already finalized). */
+export function endLive(
+	msg: AssistantMessage,
+	state: 'stopped' | 'error',
+	errorDetail?: string
+): AssistantMessage {
+	if (!msg.live) return msg;
+	return { ...msg, live: { ...msg.live, state, errorDetail } };
+}
+
+/**
+ * Build the finished message once a `done` event arrives for a streaming
+ * draft: `fromDone`'s result, but keeping the draft's id (so its card
+ * doesn't jump) and folding its timeline into `trace` for the collapsed
+ * "How this was checked" section.
+ */
+export function finalizeLive(draft: AssistantMessage, ev: AgentDoneEvent): AssistantMessage {
+	const items = draft.live?.items ?? [];
+	return { ...fromDone(ev), id: draft.id, trace: items.length > 0 ? items : undefined };
 }
 
 // ---------------------------------------------------------------------------

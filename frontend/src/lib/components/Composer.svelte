@@ -1,16 +1,23 @@
 <script lang="ts">
 	let {
-		busy = false,
+		running = false,
 		onsend,
+		onstop,
 		placeholder = 'Type a theorem, proof sketch or question…'
-	}: { busy?: boolean; onsend: (text: string) => void; placeholder?: string } = $props();
+	}: {
+		/** True while a proof is being written/checked anywhere (only one run at a time is allowed). */
+		running?: boolean;
+		onsend: (text: string) => void;
+		onstop?: () => void;
+		placeholder?: string;
+	} = $props();
 
 	let text = $state('');
 	let el: HTMLTextAreaElement | undefined = $state();
 
 	function submit() {
 		const t = text.trim();
-		if (!t || busy) return;
+		if (!t || running) return;
 		onsend(t);
 		text = '';
 		queueMicrotask(resize);
@@ -43,17 +50,20 @@
 		oninput={resize}
 		{onkeydown}
 		rows="1"
-		{placeholder}
+		disabled={running}
+		placeholder={running ? 'A proof is currently running…' : placeholder}
 		aria-label="Message"
-		class="max-h-[200px] min-h-6 flex-1 resize-none self-center bg-transparent py-1.5 text-[15px] leading-6 text-ink outline-none placeholder:text-muted"
+		class="max-h-[200px] min-h-6 flex-1 resize-none self-center bg-transparent py-1.5 text-[15px] leading-6 text-ink outline-none placeholder:text-muted disabled:cursor-not-allowed"
 	></textarea>
 	<button
-		type="submit"
-		disabled={busy || !text.trim()}
+		type={running ? 'button' : 'submit'}
+		onclick={running ? () => onstop?.() : undefined}
+		disabled={!running && !text.trim()}
 		class="grid size-9 shrink-0 place-items-center rounded-full bg-ink text-paper transition hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-25"
-		aria-label="Send"
+		aria-label={running ? 'Stop' : 'Send'}
+		title={running ? 'Stop' : 'Send'}
 	>
-		{#if busy}
+		{#if running}
 			<span class="size-3 rounded-sm bg-paper"></span>
 		{:else}
 			<svg viewBox="0 0 20 20" class="size-4" fill="none" stroke="currentColor" stroke-width="2">

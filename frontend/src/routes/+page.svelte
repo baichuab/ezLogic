@@ -5,30 +5,28 @@
 		ApiError,
 		applyEvent,
 		emptyLiveMessage,
+		endLive,
 		ensureSession,
-		fromDone,
+		finalizeLive,
 		getHistory,
 		isMockMode,
 		newChatId,
 		streamChat
 	} from '#lib/api.js';
+	import { toolLabel } from '#lib/format.js';
 	import { demoChats } from '#lib/mock.js';
-	import type { AssistantMessage, Chat } from '#lib/types.js';
+	import type { AssistantMessage, Chat, VerificationStatus } from '#lib/types.js';
 	import Brace from '#lib/components/Brace.svelte';
 	import Composer from '#lib/components/Composer.svelte';
+	import LiveMessage from '#lib/components/LiveMessage.svelte';
 	import ProofSteps from '#lib/components/ProofSteps.svelte';
 	import Sidebar from '#lib/components/Sidebar.svelte';
 	import StepDetail from '#lib/components/StepDetail.svelte';
 
-	/** Friendlier wording than the raw tool name for the "what's happening" indicator. */
-	const TOOL_LABEL: Record<string, string> = {
-		check_lean_file: 'Checking the proof with Lean…',
-		check_lean_snippet: 'Checking a snippet with Lean…',
-		write_file: 'Writing the proof…',
-		edit_file: 'Updating the proof…',
-		read_file: 'Reading the workspace…',
-		list_files: 'Looking at the workspace…',
-		delete_file: 'Cleaning up…'
+	const STATUS_ANNOUNCE: Record<VerificationStatus, string> = {
+		verified: 'Verified in Lean 4',
+		unverified: 'Not yet verified',
+		failed: 'Verification incomplete'
 	};
 
 	// ---- state ---------------------------------------------------------------
@@ -38,11 +36,18 @@
 	let showLean = $state(false);
 	let sidebarPinned = $state(true);
 	let drawerOpen = $state(false);
-	let busy = $state(false);
-	let busyText = $state('Writing and checking the Lean proof…');
-	let error = $state<{ text: string; message: string } | null>(null);
+	/** Set when loading a chat's stored history (GET /api/history) fails. Unrelated to a
+	 * streaming run's own errors, which are shown inline on that message instead. */
+	let historyError = $state<string | null>(null);
 	/** Set when the guest session bootstrap (POST /api/session) fails. */
 	let sessionError = $state<string | null>(null);
+	/** Announced to screen readers as the agent works; not every token, just milestones. */
+	let liveAnnouncement = $state('');
+
+	/** The one run allowed at a time (backend/main.py uses a single shared workspace, so two
+	 * concurrent runs could overwrite each other's .lean files -- see frontend/README.md B9). */
+	let inFlight = $state<{ chatId: string; messageId: string; controller: AbortController } | null>(null);
+	const running = $derived(inFlight !== null);
 
 	onMount(() => {
 		if (isMockMode) return;
@@ -92,13 +97,13 @@
 		activeId = id;
 		selection = null;
 		drawerOpen = false;
-		error = null;
+		historyError = null;
 		const chat = chats.find((c) => c.id === id);
 		if (!chat || chat.messages.length > 0 || isMockMode) return;
 		try {
 			chat.messages = await getHistory(id);
 		} catch (e) {
-			error = { text: '', message: e instanceof Error ? e.message : String(e) };
+			historyError = e instanceof Error ? e.message : String(e);
 		}
 	}
 
@@ -106,11 +111,68 @@
 		activeId = null;
 		selection = null;
 		drawerOpen = false;
-		error = null;
+		historyError = null;
+	}
+
+	/** Streams one turn into `chat`, replacing the `draftId` placeholder message as events arrive. */
+	async function runTurn(chat: Chat, text: string, draftId: string) {
+		let draft = emptyLiveMessage(draftId);
+		chat.messages.push(draft);
+		scrollToBottom();
+
+		const controller = new AbortController();
+		inFlight = { chatId: chat.id, messageId: draftId, controller };
+
+		// Tokens can arrive many times a second; redrawing (and re-running KaTeX)
+		// on every single one is wasteful, so batch updates to once per frame.
+		// `done`/stop/error are applied immediately instead, below.
+		let pendingFrame = 0;
+		const flush = () => {
+			const idx = chat.messages.findIndex((m) => m.id === draftId);
+			if (idx !== -1) chat.messages[idx] = draft;
+		};
+		const scheduleFlush = () => {
+			if (pendingFrame) return;
+			pendingFrame = requestAnimationFrame(() => {
+				pendingFrame = 0;
+				flush();
+				maybeAutoScroll();
+			});
+		};
+
+		try {
+			for await (const ev of streamChat(chat.id, text, { signal: controller.signal })) {
+				if (ev.type === 'done') {
+					draft = finalizeLive(draft, ev);
+					flush();
+					chat.updatedAt = Date.now();
+					liveAnnouncement = STATUS_ANNOUNCE[draft.status];
+					maybeAutoScroll();
+				} else {
+					draft = applyEvent(draft, ev);
+					if (ev.type === 'tool_call_start') liveAnnouncement = toolLabel(ev.name);
+					scheduleFlush();
+				}
+			}
+		} catch (e) {
+			if (e instanceof ApiError && e.kind === 'aborted') {
+				draft = endLive(draft, 'stopped');
+				liveAnnouncement = 'Stopped';
+			} else {
+				const detail = e instanceof Error ? e.message : String(e);
+				draft = endLive(draft, 'error', detail);
+				liveAnnouncement = `Error: ${detail}`;
+			}
+			flush();
+			maybeAutoScroll();
+		} finally {
+			if (pendingFrame) cancelAnimationFrame(pendingFrame);
+			if (inFlight?.messageId === draftId) inFlight = null;
+		}
 	}
 
 	async function send(text: string) {
-		error = null;
+		if (running) return;
 		let chat = active;
 		if (!chat) {
 			chat = {
@@ -125,49 +187,52 @@
 		}
 		chat.messages.push({ id: `u-${Date.now().toString(36)}`, role: 'user', text });
 		scrollToBottom();
-
-		busy = true;
-		busyText = 'Writing and checking the Lean proof…';
-		// Filled in live from `token`/`tool_*` events so `busyText` can reflect
-		// progress; discarded once `fromDone` builds the real message. Not
-		// rendered yet (see frontend/README.md Phase 2 for the live view).
-		let live = emptyLiveMessage(`live-${Date.now().toString(36)}`);
-		try {
-			for await (const ev of streamChat(chat.id, text)) {
-				if (ev.type === 'done') {
-					chat.messages.push(fromDone(ev));
-					chat.updatedAt = Date.now();
-				} else {
-					live = applyEvent(live, ev);
-					if (ev.type === 'tool_call_start') busyText = TOOL_LABEL[ev.name] ?? `Running ${ev.name}…`;
-				}
-			}
-			scrollToBottom();
-		} catch (e) {
-			if (!(e instanceof ApiError && e.kind === 'aborted')) {
-				error = { text, message: e instanceof Error ? e.message : String(e) };
-			}
-		} finally {
-			busy = false;
-		}
+		await runTurn(chat, text, `live-${Date.now().toString(36)}`);
 	}
 
-	function retry() {
-		if (!error || !active) return;
-		const { text } = error;
-		const lastMsg = active.messages.at(-1);
-		if (lastMsg?.role === 'user' && lastMsg.text === text) active.messages.pop();
-		send(text);
+	/** Retries a failed/stopped message: drops it and re-runs the same turn, without duplicating the user bubble above it. */
+	function retryMessage(messageId: string) {
+		if (!active || running) return;
+		const chat = active;
+		const idx = chat.messages.findIndex((m) => m.id === messageId);
+		if (idx <= 0) return;
+		const prev = chat.messages[idx - 1];
+		if (prev.role !== 'user') return;
+		chat.messages.splice(idx, 1);
+		runTurn(chat, prev.text, `live-${Date.now().toString(36)}`);
+	}
+
+	function stop() {
+		inFlight?.controller.abort();
 	}
 
 	// ---- scrolling & brace geometry -----------------------------------------
 	let scroller: HTMLDivElement | undefined = $state();
 	let braceEl: HTMLDivElement | undefined = $state();
 	let brace = $state({ tipY: 0, height: 0 });
+	/** Shown once new content arrives while the user has scrolled away from the bottom to read. */
+	let showJumpToBottom = $state(false);
+
+	function nearBottom(): boolean {
+		if (!scroller) return true;
+		return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+	}
 
 	async function scrollToBottom() {
 		await tick();
 		scroller?.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+		showJumpToBottom = false;
+	}
+
+	/** Follows new streamed content only if the user hasn't scrolled away to read something. */
+	function maybeAutoScroll() {
+		if (nearBottom()) scrollToBottom();
+		else showJumpToBottom = true;
+	}
+
+	function onscroll() {
+		measureBrace();
+		if (nearBottom()) showJumpToBottom = false;
 	}
 
 	function measureBrace() {
@@ -223,6 +288,8 @@
 
 <svelte:window {onkeydown} />
 
+<div aria-live="polite" class="sr-only">{liveAnnouncement}</div>
+
 <div class="flex h-dvh overflow-hidden">
 	{#if sidebarDocked}
 		<div class="hidden md:block" transition:fly={{ x: -24, duration: 160 }}>
@@ -275,15 +342,32 @@
 			</div>
 		{/if}
 
+		{#if historyError}
+			<div
+				class="mx-3 mb-2 flex items-center gap-3 rounded-xl border border-warn/30 bg-warn-soft px-4 py-2.5 text-sm text-warn"
+				role="alert"
+				transition:fade={{ duration: 120 }}
+			>
+				<span class="flex-1">Couldn't load this chat: {historyError}</span>
+				<button
+					type="button"
+					onclick={() => activeId && openChat(activeId)}
+					class="font-medium underline underline-offset-2"
+				>
+					Retry
+				</button>
+			</div>
+		{/if}
+
 		<!-- Conversation + detail split -->
 		<div class="flex min-h-0 flex-1 gap-0 px-3 lg:px-4">
 			<section
-				class="flex min-h-0 min-w-0 flex-col transition-[width] duration-200
+				class="relative flex min-h-0 min-w-0 flex-col transition-[width] duration-200
 				{expanded ? 'w-full lg:w-[400px] lg:shrink-0 xl:w-[440px]' : 'w-full'}"
 			>
 				<div
 					bind:this={scroller}
-					onscroll={measureBrace}
+					{onscroll}
 					class="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
 				>
 					{#if !active || active.messages.length === 0}
@@ -299,8 +383,9 @@
 								{#each EXAMPLES as ex (ex)}
 									<button
 										type="button"
+										disabled={running}
 										onclick={() => send(ex)}
-										class="rounded-full border border-line bg-surface px-3.5 py-1.5 text-sm text-ink-2 transition hover:border-line-strong hover:text-ink"
+										class="rounded-full border border-line bg-surface px-3.5 py-1.5 text-sm text-ink-2 transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
 									>
 										{ex}
 									</button>
@@ -319,6 +404,10 @@
 											{msg.text}
 										</p>
 									</div>
+								{:else if msg.live}
+									<div in:fade={{ duration: 120 }}>
+										<LiveMessage message={msg} onretry={() => retryMessage(msg.id)} />
+									</div>
 								{:else}
 									<ProofSteps
 										message={msg}
@@ -328,32 +417,20 @@
 									/>
 								{/if}
 							{/each}
-
-							{#if busy}
-								<div class="flex items-center gap-3 pl-11 text-sm text-ink-2" in:fade>
-									<span class="flex gap-1" aria-hidden="true">
-										<span class="size-1.5 animate-bounce rounded-full bg-muted"></span>
-										<span class="size-1.5 animate-bounce rounded-full bg-muted [animation-delay:120ms]"></span>
-										<span class="size-1.5 animate-bounce rounded-full bg-muted [animation-delay:240ms]"></span>
-									</span>
-									{busyText}
-								</div>
-							{/if}
-
-							{#if error}
-								<div
-									class="ml-11 flex items-center gap-3 rounded-xl border border-warn/30 bg-warn-soft px-4 py-3 text-sm text-warn"
-									role="alert"
-								>
-									<span class="flex-1">{error.message}</span>
-									<button type="button" onclick={retry} class="font-medium underline underline-offset-2">
-										Retry
-									</button>
-								</div>
-							{/if}
 						</div>
 					{/if}
 				</div>
+
+				{#if showJumpToBottom}
+					<button
+						type="button"
+						onclick={scrollToBottom}
+						transition:fade={{ duration: 120 }}
+						class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-paper shadow-lg transition hover:opacity-90"
+					>
+						↓ New activity
+					</button>
+				{/if}
 			</section>
 
 			{#if expanded && selectedMessage && selectedStep}
@@ -380,9 +457,11 @@
 		<!-- Composer: present in every state -->
 		<div class="shrink-0 px-4 pb-4 pt-2">
 			<div class="mx-auto max-w-3xl">
-				<Composer {busy} onsend={send} />
+				<Composer {running} onsend={send} onstop={stop} />
 				<p class="mt-2 text-center text-[11px] text-muted">
-					Proofs are checked by Lean 4. Explanations are AI-generated.
+					{running
+						? 'A proof is currently running — use Stop to cancel.'
+						: 'Proofs are checked by Lean 4. Explanations are AI-generated.'}
 				</p>
 			</div>
 		</div>

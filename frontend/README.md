@@ -20,15 +20,22 @@ By default `npm run dev` expects the backend on `http://localhost:8000` (see
 
 ```sh
 npm run check        # svelte-check (types)
-npm run test          # vitest: src/lib/api.test.ts
+npm run test          # vitest: src/lib/api.test.ts, src/lib/format.test.ts
 ```
 
-`src/lib/api.ts` is unit tested because it's where most of the risk in the frontend lives: it
-turns an SSE stream that can arrive in arbitrary chunks into chat messages, and it alone decides
-whether a proof is shown as "Verified" -- that decision must come only from what a Lean tool call
-actually returned, never from the model's own say-so. See the test names in `api.test.ts` for the
-specific cases covered (chunk splitting, UTF-8 boundaries, error-body shapes, and the
-verification-status truth table).
+`src/lib/api.ts` and `src/lib/format.ts` are unit tested because that's where most of the risk in
+the frontend lives: turning an SSE stream that can arrive in arbitrary chunks into chat messages
+and a live timeline, deciding what's safe to show while a ```json steps block is still being
+written, and -- the most important one -- deciding whether a proof is shown as "Verified". That
+decision must come only from what a Lean tool call actually returned, never from the model's own
+say-so (its prose, or a `verified` flag inside its own ```json block). See the test names in
+`api.test.ts`/`format.test.ts` for the specific cases covered (chunk splitting, UTF-8 boundaries,
+error-body shapes, the verification-status truth table, and the live-view timeline/placeholder
+logic).
+
+Manual testing in mock mode (`VITE_MOCK=1`): sending `/slow` replays the demo proof with long,
+visible delays between steps, to watch the live view (commentary, tool ticks, Stop). Sending
+`/error` ends the run in a simulated stream error instead, to check the inline Retry.
 
 ## Building
 
@@ -57,8 +64,10 @@ is absent. Backend changes should either implement these or let this list be upd
 | B4 | The agent's prose explanation (`reply`) is stored, so a cache hit's `reply` is the real explanation, and `GET /api/history` turns include it too | When `reply` is missing or equals `response` (true for every cache hit today, since `reply` just duplicates the Lean source), the UI shows a generic "Cached result" / "Lean proof" card with no explanation |
 | B5 | The agent's final reply contains a &#96;&#96;&#96;json &#123;steps, intro?, lean?&#125; block (shape in `fromReply`) | A single "Response" step built from the whole reply, with the first &#96;&#96;&#96;lean&#96;&#96;&#96; fence (if any) as its code |
 | B6 | `tool_call_start.id` is never empty | Matched to its `tool_result` by order instead (oldest still-running call with the same name) |
-| B7 | The backend agent run stops promptly when the client disconnects (for a future Stop button) | None needed client-side; the backend just keeps running unseen |
+| B7 | The backend agent run stops promptly when the client disconnects (the Stop button aborts the fetch) | None needed client-side; the backend just keeps running unseen until it finishes or errors on its own |
 | B8 | A "list my chats" endpoint | The chat list lives in `localStorage` (not yet implemented) |
+| B9 | Each run gets its own workspace directory | The UI only allows one run at a time, across every chat (`+page.svelte`'s `inFlight`): `main.py` currently gives every request the same shared `Workspace`, so two concurrent runs could overwrite each other's `.lean` files and invalidate each other's verification result |
+| B10 | The agent's tool-call trace is stored per turn and returned by `GET /api/history` | The collapsed "How this was checked" section (`AgentTrace.svelte`) only has anything to show right after a live run finishes (`AssistantMessage.trace`, filled in by `finalizeLive`); it's hidden for a cache hit or a reloaded history turn, since no trace is stored for those |
 
 Everything else in `AgentEvent`/`ChatRequest`/`HistoryTurn` (`types.ts`) is already how the
 backend behaves as of the `agentStreaming` branch merge.

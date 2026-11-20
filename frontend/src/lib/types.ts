@@ -39,13 +39,28 @@ export interface UserMessage {
 	text: string;
 }
 
-/** One tool call shown in the "what the agent is doing" indicator while a message streams in. */
-export interface ToolActivity {
-	id: string;
-	name: string;
-	/** Usually the file path the tool acted on, when there is one. */
-	target?: string;
-	state: 'running' | 'ok' | 'failed';
+/**
+ * One item in the agent's timeline: a chunk of its own prose commentary, or
+ * a tool call. Shown live while a message streams in (`AssistantMessage.live`)
+ * and, collapsed, after it finishes (`AssistantMessage.trace`).
+ */
+export type LiveItem =
+	| { kind: 'text'; text: string }
+	| {
+			kind: 'tool';
+			id: string;
+			name: string;
+			/** Usually the file path the tool acted on, when there is one. */
+			target?: string;
+			state: 'running' | 'ok' | 'failed';
+	  };
+
+/** The agent's progress on a message that hasn't finished cleanly yet. */
+export interface LiveDraft {
+	state: 'streaming' | 'stopped' | 'error';
+	items: LiveItem[];
+	/** Set when `state` is 'error'. */
+	errorDetail?: string;
 }
 
 export interface AssistantMessage {
@@ -64,10 +79,14 @@ export interface AssistantMessage {
 	cached?: boolean;
 	/** False if the agent hit AGENT_MAX_STEPS before finishing. */
 	finished?: boolean;
-	/** Present only while the message is still streaming in; cleared once `done` arrives. */
-	live?: { text: string; activity: ToolActivity[] };
-	/** Set when the stream ended in an `error` event or was cut short. */
-	errorDetail?: string;
+	/** Present while streaming, and still present (read-only) if stopped or errored; absent once `done` arrives cleanly. */
+	live?: LiveDraft;
+	/**
+	 * The agent's timeline, kept after a clean finish for the collapsed "How
+	 * this was checked" section. Absent for a cache hit or a reloaded history
+	 * turn: no trace is stored server-side (see frontend/README.md B10).
+	 */
+	trace?: LiveItem[];
 }
 
 export type ChatMessage = UserMessage | AssistantMessage;

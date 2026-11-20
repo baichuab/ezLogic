@@ -133,15 +133,54 @@ export function demoChats(): Chat[] {
 	];
 }
 
+export interface MockStep {
+	event: AgentEvent;
+	/** Milliseconds `streamChat`'s mock branch waits before yielding this event. */
+	delay: number;
+}
+
+function chunk(text: string, size: number): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < text.length; i += size) out.push(text.slice(i, i + size));
+	return out;
+}
+
+/** `token` events for `text`, split into small chunks, so it streams in visibly rather than all at once. */
+function textEvents(text: string, delay: number, size = 8): MockStep[] {
+	return chunk(text, size).map((content) => ({ event: { type: 'token', content }, delay }));
+}
+
 /**
  * A scripted `AgentEvent` sequence standing in for a real `/api/chat` run,
- * ending in a `done` event for the Gauss sum proof above. Built from
- * `AgentEvent`s (not a ready-made `AssistantMessage`) so mock mode exercises
- * the same `applyEvent` / `fromDone` / `fromReply` code path as the real
- * backend, including the ```json steps block and the tool-call-derived
- * verification status.
+ * built from `AgentEvent`s (not a ready-made `AssistantMessage`) so mock mode
+ * exercises the same `applyEvent` / `finalizeLive` / `fromReply` code path as
+ * the real backend: commentary streams in as `token`s (with the ```json steps
+ * block hidden live by `liveProse`, the same as a real reply would be), tool
+ * calls appear as `tool_call_start`/`tool_result`, and the proof's
+ * verification status is derived from those tool calls, not asserted.
+ *
+ * For manual testing of the live view, `userText` can be `/slow` (longer
+ * delays, to watch each step) or `/error` (ends in an `error` event instead
+ * of `done`, partway through).
  */
-export function mockEvents(): AgentEvent[] {
+export function mockEvents(userText = ''): MockStep[] {
+	const trimmed = userText.trim().toLowerCase();
+	const delay = trimmed.startsWith('/slow') ? 260 : 60;
+
+	if (trimmed.startsWith('/error')) {
+		return [
+			...textEvents('Let me take a look at this.\n\n', delay),
+			{ event: { type: 'tool_call_start', id: 'mock-err', name: 'check_lean_snippet' }, delay },
+			{
+				event: {
+					type: 'error',
+					detail: 'Mock error (type /error to trigger this): simulated failure for manual testing.'
+				},
+				delay
+			}
+		];
+	}
+
 	const writeCall: ToolCall = {
 		name: 'write_file',
 		arguments: { path: GAUSS_FILE, content: GAUSS_LEAN },
@@ -152,21 +191,27 @@ export function mockEvents(): AgentEvent[] {
 		arguments: { path: GAUSS_FILE },
 		result: { ok: true, messages: [], output: '', error: null }
 	};
-	const reply = ['```json', JSON.stringify({ intro: GAUSS_INTRO, steps: GAUSS_STEPS }), '```'].join('\n');
+	const commentary = 'Let me formalise this and check it compiles with Lean.\n\n';
+	const summary = ['```json', JSON.stringify({ intro: GAUSS_INTRO, steps: GAUSS_STEPS }), '```'].join('\n');
 
 	return [
-		{ type: 'tool_call_start', id: 'mock-1', name: writeCall.name },
-		{ type: 'tool_result', id: 'mock-1', ...writeCall },
-		{ type: 'tool_call_start', id: 'mock-2', name: checkCall.name },
-		{ type: 'tool_result', id: 'mock-2', ...checkCall },
+		...textEvents(commentary, delay),
+		{ event: { type: 'tool_call_start', id: 'mock-1', name: writeCall.name }, delay },
+		{ event: { type: 'tool_result', id: 'mock-1', ...writeCall }, delay },
+		{ event: { type: 'tool_call_start', id: 'mock-2', name: checkCall.name }, delay },
+		{ event: { type: 'tool_result', id: 'mock-2', ...checkCall }, delay },
+		...textEvents(summary, delay, 24),
 		{
-			type: 'done',
-			cached: false,
-			query_id: `mock-${Date.now().toString(36)}`,
-			response: GAUSS_LEAN,
-			reply,
-			finished: true,
-			tool_calls: [writeCall, checkCall]
+			event: {
+				type: 'done',
+				cached: false,
+				query_id: `mock-${Date.now().toString(36)}`,
+				response: GAUSS_LEAN,
+				reply: commentary + summary,
+				finished: true,
+				tool_calls: [writeCall, checkCall]
+			},
+			delay
 		}
 	];
 }

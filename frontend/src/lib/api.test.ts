@@ -8,8 +8,10 @@ import {
 	deriveVerified,
 	describeErrorBody,
 	emptyLiveMessage,
+	endLive,
 	ensureSession,
 	extractLeanFile,
+	finalizeLive,
 	fromDone,
 	fromReply,
 	fromTurn,
@@ -581,12 +583,31 @@ describe('fromReply', () => {
 	});
 });
 
-describe('applyEvent', () => {
-	it('accumulates token text', () => {
+describe('applyEvent (live timeline)', () => {
+	it('merges consecutive tokens into one text item', () => {
 		let msg = emptyLiveMessage('a1');
 		msg = applyEvent(msg, { type: 'token', content: 'Hello' });
 		msg = applyEvent(msg, { type: 'token', content: ', world' });
-		expect(msg.live?.text).toBe('Hello, world');
+		expect(msg.live?.items).toEqual([{ kind: 'text', text: 'Hello, world' }]);
+	});
+
+	it('starts a new text item after a tool step, instead of merging across it', () => {
+		let msg = emptyLiveMessage('a1');
+		msg = applyEvent(msg, { type: 'token', content: 'Checking...' });
+		msg = applyEvent(msg, { type: 'tool_call_start', id: 't1', name: 'check_lean_file' });
+		msg = applyEvent(msg, {
+			type: 'tool_result',
+			id: 't1',
+			name: 'check_lean_file',
+			arguments: { path: 'P.lean' },
+			result: { ok: true, messages: [], output: '', error: null }
+		});
+		msg = applyEvent(msg, { type: 'token', content: 'Done.' });
+		expect(msg.live?.items).toEqual([
+			{ kind: 'text', text: 'Checking...' },
+			{ kind: 'tool', id: 't1', name: 'check_lean_file', state: 'ok', target: 'P.lean' },
+			{ kind: 'text', text: 'Done.' }
+		]);
 	});
 
 	it('matches a tool_result to its tool_call_start by id', () => {
@@ -599,8 +620,8 @@ describe('applyEvent', () => {
 			arguments: { path: 'P.lean' },
 			result: { ok: true }
 		});
-		expect(msg.live?.activity).toEqual([
-			{ id: 't1', name: 'check_lean_file', state: 'ok', target: 'P.lean' }
+		expect(msg.live?.items).toEqual([
+			{ kind: 'tool', id: 't1', name: 'check_lean_file', state: 'ok', target: 'P.lean' }
 		]);
 	});
 
@@ -614,12 +635,119 @@ describe('applyEvent', () => {
 			arguments: {},
 			result: { error: 'not found' }
 		});
-		expect(msg.live?.activity).toEqual([{ id: '', name: 'read_file', state: 'failed', target: undefined }]);
+		expect(msg.live?.items).toEqual([{ kind: 'tool', id: '', name: 'read_file', state: 'failed', target: undefined }]);
+	});
+
+	it('does not confuse two concurrent calls with empty ids and different names', () => {
+		let msg = emptyLiveMessage('a1');
+		msg = applyEvent(msg, { type: 'tool_call_start', id: '', name: 'read_file' });
+		msg = applyEvent(msg, { type: 'tool_call_start', id: '', name: 'list_files' });
+		msg = applyEvent(msg, {
+			type: 'tool_result',
+			id: '',
+			name: 'list_files',
+			arguments: {},
+			result: { files: [] }
+		});
+		expect(msg.live?.items).toEqual([
+			{ kind: 'tool', id: '', name: 'read_file', state: 'running' },
+			{ kind: 'tool', id: '', name: 'list_files', state: 'ok', target: undefined }
+		]);
 	});
 
 	it('is a no-op once the message is no longer live (done already replaced it)', () => {
 		const msg = fromReply('done');
 		expect(applyEvent(msg, { type: 'token', content: 'ignored' })).toBe(msg);
+	});
+
+	it('is a no-op once the draft has been stopped or errored (events still in flight)', () => {
+		let msg = emptyLiveMessage('a1');
+		msg = applyEvent(msg, { type: 'token', content: 'partial' });
+		const stopped = endLive(msg, 'stopped');
+		const afterStop = applyEvent(stopped, { type: 'token', content: ' more' });
+		expect(afterStop).toBe(stopped);
+		expect(afterStop.live?.items).toEqual([{ kind: 'text', text: 'partial' }]);
+	});
+});
+
+describe('endLive', () => {
+	it('keeps the existing items and sets the state', () => {
+		let msg = emptyLiveMessage('a1');
+		msg = applyEvent(msg, { type: 'token', content: 'partial work' });
+		const stopped = endLive(msg, 'stopped');
+		expect(stopped.live).toEqual({ state: 'stopped', items: [{ kind: 'text', text: 'partial work' }] });
+	});
+
+	it('records the error detail for a stream error', () => {
+		let msg = emptyLiveMessage('a1');
+		const errored = endLive(msg, 'error', 'connection lost');
+		expect(errored.live?.state).toBe('error');
+		expect(errored.live?.errorDetail).toBe('connection lost');
+	});
+
+	it('is idempotent: calling it twice does not throw or lose data', () => {
+		let msg = emptyLiveMessage('a1');
+		msg = applyEvent(msg, { type: 'token', content: 'x' });
+		const once = endLive(msg, 'stopped');
+		const twice = endLive(once, 'stopped');
+		expect(twice).toEqual(once);
+	});
+
+	it('is a no-op on a message with no live draft', () => {
+		const msg = fromReply('done');
+		expect(endLive(msg, 'stopped')).toBe(msg);
+	});
+});
+
+describe('finalizeLive', () => {
+	const doneEvent: AgentDoneEvent = {
+		type: 'done',
+		cached: false,
+		query_id: 'q1',
+		response: 'theorem t : True := trivial',
+		reply: 'Done.',
+		finished: true,
+		tool_calls: [
+			{
+				name: 'check_lean_file',
+				arguments: { path: 'T.lean' },
+				result: { ok: true, messages: [], output: '', error: null }
+			}
+		]
+	};
+
+	it('keeps the draft id so the card does not jump', () => {
+		let draft = emptyLiveMessage('draft-1');
+		draft = applyEvent(draft, { type: 'token', content: 'Checking...' });
+		const final = finalizeLive(draft, doneEvent);
+		expect(final.id).toBe('draft-1');
+		expect(final.live).toBeUndefined();
+	});
+
+	it('folds the live timeline into trace', () => {
+		let draft = emptyLiveMessage('draft-1');
+		draft = applyEvent(draft, { type: 'tool_call_start', id: 't1', name: 'check_lean_file' });
+		draft = applyEvent(draft, {
+			type: 'tool_result',
+			id: 't1',
+			name: 'check_lean_file',
+			arguments: { path: 'T.lean' },
+			result: { ok: true, messages: [], output: '', error: null }
+		});
+		const final = finalizeLive(draft, doneEvent);
+		expect(final.trace).toEqual([{ kind: 'tool', id: 't1', name: 'check_lean_file', state: 'ok', target: 'T.lean' }]);
+	});
+
+	it('omits trace entirely when the draft collected nothing', () => {
+		const draft = emptyLiveMessage('draft-1');
+		const final = finalizeLive(draft, doneEvent);
+		expect(final.trace).toBeUndefined();
+	});
+
+	it('still derives status the same way fromDone does, not from the trace', () => {
+		const draft = emptyLiveMessage('draft-1');
+		const final = finalizeLive(draft, doneEvent);
+		expect(final.status).toBe('verified');
 	});
 });
 

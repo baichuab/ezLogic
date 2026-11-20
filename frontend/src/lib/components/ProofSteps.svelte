@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { AssistantMessage } from '#lib/types.js';
 	import { KIND_LABEL } from '#lib/format.js';
+	import AgentTrace from './AgentTrace.svelte';
 	import MathBlock from './MathBlock.svelte';
 	import RichText from './RichText.svelte';
 	import StatusBadge from './StatusBadge.svelte';
@@ -29,6 +30,12 @@
 			<p class="text-sm text-ink-2">{message.intro}</p>
 		{/if}
 	</div>
+
+	{#if message.trace && !compact}
+		<div class="pl-11">
+			<AgentTrace items={message.trace} />
+		</div>
+	{/if}
 
 	<ol aria-label="Proof steps">
 		{#each message.steps as step, i (step.id)}
