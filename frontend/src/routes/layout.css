@@ -1,1 +1,121 @@
 @import 'tailwindcss';
+
+/* Design tokens. Light by default, dark via prefers-color-scheme. */
+:root {
+	--c-paper: #f7f6f2;
+	--c-surface: #ffffff;
+	--c-sunken: #efeee9;
+	--c-ink: #1b1a17;
+	--c-ink-2: #4a4843;
+	--c-muted: #8a877f;
+	--c-line: #d9d7d0;
+	--c-line-strong: #b9b6ad;
+	--c-accent: #3346c4;
+	--c-accent-soft: #e6e9fb;
+	--c-ok: #1f7a4d;
+	--c-ok-soft: #e2f3ea;
+	--c-warn: #9a6200;
+	--c-warn-soft: #fbefd9;
+	--c-code-bg: #1c1d22;
+	--c-code-ink: #d9dbe3;
+	--c-code-line: #2a2c34;
+	--c-code-hl: #2b3256;
+	color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--c-paper: #141413;
+		--c-surface: #1d1d1b;
+		--c-sunken: #232320;
+		--c-ink: #eceae4;
+		--c-ink-2: #bdbab2;
+		--c-muted: #85827a;
+		--c-line: #33322e;
+		--c-line-strong: #4a4943;
+		--c-accent: #8b9bff;
+		--c-accent-soft: #23284a;
+		--c-ok: #5fcf95;
+		--c-ok-soft: #173326;
+		--c-warn: #e6b45c;
+		--c-warn-soft: #3a2e17;
+		--c-code-bg: #0f1013;
+		--c-code-line: #1d1f25;
+		--c-code-hl: #232a4d;
+		color-scheme: dark;
+	}
+}
+
+@theme inline {
+	--color-paper: var(--c-paper);
+	--color-surface: var(--c-surface);
+	--color-sunken: var(--c-sunken);
+	--color-ink: var(--c-ink);
+	--color-ink-2: var(--c-ink-2);
+	--color-muted: var(--c-muted);
+	--color-line: var(--c-line);
+	--color-line-strong: var(--c-line-strong);
+	--color-accent: var(--c-accent);
+	--color-accent-soft: var(--c-accent-soft);
+	--color-ok: var(--c-ok);
+	--color-ok-soft: var(--c-ok-soft);
+	--color-warn: var(--c-warn);
+	--color-warn-soft: var(--c-warn-soft);
+	--color-code-bg: var(--c-code-bg);
+	--color-code-ink: var(--c-code-ink);
+	--color-code-line: var(--c-code-line);
+	--color-code-hl: var(--c-code-hl);
+
+	--font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+	--font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+	--font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, 'STIX Two Math', 'Cambria Math', monospace;
+}
+
+html,
+body {
+	height: 100%;
+}
+
+body {
+	background: var(--c-paper);
+	color: var(--c-ink);
+	font-family: var(--font-sans);
+	-webkit-font-smoothing: antialiased;
+}
+
+/* KaTeX inherits the ink colour; keep long display equations scrollable. */
+.katex {
+	font-size: 1.08em;
+}
+.math-block {
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: thin;
+}
+.math-block .katex-display {
+	margin: 0.2em 0;
+}
+
+/* Lean syntax colours (code panel is always dark). */
+.lean-keyword {
+	color: #c792ea;
+}
+.lean-tactic {
+	color: #82aaff;
+}
+.lean-type {
+	color: #ffcb6b;
+}
+.lean-number {
+	color: #f78c6c;
+}
+.lean-string {
+	color: #c3e88d;
+}
+.lean-comment {
+	color: #6b7089;
+	font-style: italic;
+}
+.lean-symbol {
+	color: #89ddff;
+}
