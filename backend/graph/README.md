@@ -62,6 +62,10 @@ The metaprogram runs after the source, so it can see everything the source defin
 A declaration that fails is stored by Lean as `sorry`, so lemmas its tactics used would be missing
 from `constants`. Those are classified with a second command that only repeats the imports.
 
+The metaprogram also prints each constant's source range. The REPL's `declarations` list skips
+declarations inside `mutual ... end` blocks; the builder recovers them from these ranges (any
+named constant written in the source that isn't part of a reported declaration).
+
 Because `import Lean` is added as the first line, every position Lean reports is one line too far
 down; `Extraction.line_offset` records this and the builder subtracts it.
 
@@ -108,6 +112,12 @@ built for proofs with errors, which is when an explanation is most useful.
 by source position (networkx `lexicographical_topological_sort`). Each declaration is followed by
 its steps in source order. `nodes` is returned in this order; `external` nodes come last and have
 no `order_index`.
+
+**Cycles:** `edges` form a DAG except between declarations in a `mutual` block, which use each
+other (`isEven` ↔ `isOdd`). For ordering, each such cycle is collapsed into one group (networkx
+`condensation`); the group is placed after everything it uses, and its members stay together in
+source order. Nesting (`parent_id`) is not an edge: drawn as parent → child arrows alongside
+`uses_hyp` (child → the step containing it), it would form cycles, so show it as grouping instead.
 
 ## Output
 

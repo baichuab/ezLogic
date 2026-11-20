@@ -41,8 +41,14 @@ open Lean Meta in
       let used := ci.getUsedConstantsAsSet.toArray
       for m in used do
         if (env.getModuleIdxFor? m).isSome then refs := refs.insert m
+      -- Source range, for constants the user wrote (the REPL misses those in `mutual` blocks).
+      let (range, stmt) ← match ← findDeclarationRanges? n with
+        | none => pure (Json.null, Json.null)
+        | some r => do
+          let pp ← try pure (toJson (toString (← ppExpr ci.type))) catch _ => pure Json.null
+          pure (toJson [r.range.pos.line, r.range.pos.column, r.range.endPos.line, r.range.endPos.column], pp)
       locals := locals.push (Json.mkObj [("name", toJson n.toString), ("kind", toJson (kindOf ci)),
-        ("uses", toJson (used.map Name.toString))])
+        ("uses", toJson (used.map Name.toString)), ("range", range), ("statement", stmt)])
   let mut consts : Array Json := #[]
   for n in refs.toArray do
     let s := strip n
@@ -77,6 +83,8 @@ class LocalConstant(BaseModel):
     name: str
     kind: str
     uses: list[str]
+    range: list[int] | None = None  # [line, col, end line, end col] if written in the source
+    statement: str | None = None  # pretty-printed type, when `range` is set
 
 
 class ConstantInfo(BaseModel):

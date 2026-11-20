@@ -37,7 +37,7 @@ def test_goal_parsing():
     assert not continues("zero", "succ")
 
 
-@pytest.mark.parametrize("name", ["basic", "branches", "sorry"])
+@pytest.mark.parametrize("name", ["basic", "branches", "sorry", "mutual"])
 def test_graph_is_well_formed(name):
     graph, nodes, _ = load(name)
     assert len(nodes) == len(graph.nodes)  # unique ids
@@ -70,6 +70,40 @@ def test_declarations_and_lemmas():
     assert nodes["decl:double_eq"].code.startswith("theorem double_eq")
     assert (nodes["decl:double_eq"].start_line, nodes["decl:double_eq"].end_line) == (3, 5)
     assert nodes["decl:double_eq/2"].goals_after == ""  # omega finished the proof
+
+
+def test_mutual_recursion():
+    """The REPL does not report declarations in `mutual` blocks; they are recovered from Lean's
+    declaration ranges, and the cycle between them does not break the ordering."""
+    graph, nodes, edges = load("mutual")
+    assert nodes["decl:isEven"].decl_kind == "definition"
+    assert nodes["decl:isOdd"].code.startswith("def isOdd")
+    assert ("decl:isEven", "decl:isOdd", "uses", None) in edges  # the cycle
+    assert ("decl:isOdd", "decl:isEven", "uses", None) in edges
+    assert ("decl:isEven_zero", "decl:isEven", "uses", None) in edges
+    assert ("decl:uses_both", "decl:isOdd", "uses", None) in edges
+    decls = [n.id for n in graph.nodes if n.kind == "declaration"]
+    assert decls == [
+        "decl:helper",
+        "decl:helper_pos",
+        "decl:isEven",  # the mutual block stays together, in source order
+        "decl:isOdd",
+        "decl:isEven_zero",
+        "decl:uses_both",
+    ]
+
+
+def test_no_spurious_recovered_declarations():
+    """Recovery adds nothing when the REPL already reported every declaration."""
+    _, nodes, _ = load("basic")
+    assert sorted(n for n in nodes if n.startswith("decl:") and "/" not in n) == [
+        "decl:add_zero'",
+        "decl:double",
+        "decl:double_add",
+        "decl:double_eq",
+        "decl:sum_le",
+        "decl:term_mode",
+    ]
 
 
 def test_errors_are_attached_to_nodes():

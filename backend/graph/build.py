@@ -4,8 +4,10 @@ import re
 from dataclasses import dataclass, field
 
 import networkx as nx
+from lean_interact.interface import Pos as LeanPos
+from lean_interact.interface import Range
 
-from .extract import ConstantInfo, Extraction
+from .extract import ConstantInfo, Declaration, Extraction
 from .goals import case_tag, continues, hypothesis_names
 from .model import DECLARATION, EXTERNAL, STEP, USES, USES_HYP, Edge, LeanMessage, Node, ProofGraph
 
@@ -39,6 +41,30 @@ def is_interesting(info: ConstantInfo) -> bool:
         and not name.startswith(IGNORED_PREFIXES)
         and not name.rsplit(".", 1)[-1].startswith("inst")
     )
+
+
+def recovered_declarations(ex: Extraction) -> list[Declaration]:
+    """Declarations the REPL did not report (it skips those in `mutual` blocks): constants written
+    in the source (Lean has a range for them) that are not part of a reported declaration."""
+    names = [d.name for d in ex.declarations]
+    found = []
+    for c in sorted((ex.local_constants or {}).values(), key=lambda c: len(c.name)):
+        if c.range is None or any(part.startswith("_") for part in c.name.split(".")):
+            continue
+        if any(c.name == n or c.name.startswith(n + ".") for n in names):
+            continue  # e.g. a structure's fields, or `foo.match_1`
+        sl, sc, el, ec = c.range
+        start, finish = LeanPos(line=sl, column=sc), LeanPos(line=el, column=ec)
+        found.append(
+            Declaration(
+                name=c.name,
+                kind=c.kind,
+                range=Range(synthetic=False, start=start, finish=finish),
+                statement=c.statement,
+            )
+        )
+        names.append(c.name)
+    return found
 
 
 def _inside(outer: Span, inner: Span) -> bool:
@@ -142,7 +168,8 @@ class _Builder:
     # --- passes --------------------------------------------------------------------------
 
     def add_declarations(self) -> None:
-        for d in sorted(self.ex.declarations, key=lambda d: (d.range.start.line, d.range.start.column)):
+        declarations = self.ex.declarations + recovered_declarations(self.ex)
+        for d in sorted(declarations, key=lambda d: (d.range.start.line, d.range.start.column)):
             span = self._span(d.range.start, d.range.finish)
             label = "example" if d.kind == "example" else d.name
             node_id = self._add_node(
@@ -301,10 +328,15 @@ class _Builder:
         deps.add_edges_from(
             (e.dst, e.src) for e in self.edges.values() if e.kind == USES and e.src in position and e.dst in position
         )
-        try:
-            order = list(nx.lexicographical_topological_sort(deps, key=position.get))
-        except nx.NetworkXUnfeasible:  # mutually dependent declarations: keep source order
-            order = list(position)
+        # Mutually dependent declarations (a `mutual` block) form a cycle. Each cycle is collapsed
+        # into one group; groups are ordered by dependency, members by source position.
+        groups = nx.condensation(deps)
+        first = {g: min(position[m] for m in groups.nodes[g]["members"]) for g in groups}
+        order = [
+            member
+            for g in nx.lexicographical_topological_sort(groups, key=first.get)
+            for member in sorted(groups.nodes[g]["members"], key=position.get)
+        ]
         for index, node_id in enumerate(n for d in order for n in nx.dfs_preorder_nodes(self.tree, d)):
             self.nodes[node_id].order_index = index
 
