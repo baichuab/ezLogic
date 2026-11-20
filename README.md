@@ -11,6 +11,15 @@ ezLogic is an intelligent platform that enables mathematicians to write and veri
 - **Explain code snippets** by analyzing the generated Lean code and breaking down the proof logic
 - **Iterate intelligently** by responding to verification errors and refining proofs
 
+## Getting Started
+### Dependencies
+
+
+### Running the program
+- cd frontend && npm install && npm run dev
+- cd backend && uv run fastapi dev
+
+
 ## Architecture
 
 ### Frontend
