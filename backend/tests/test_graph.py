@@ -176,6 +176,44 @@ def test_noise_is_filtered():
     assert not is_interesting(lemma("Nat.add", kind="definition"))
 
 
+def test_goals_after_without_bullets():
+    """`exact hp` after `constructor`, without bullets, closes `left` but leaves `right` open.
+    Hand-written extraction (Lean's positions are one line down because of `import Lean`)."""
+    source = "theorem t (p q : Prop) (hp : p) (hq : q) : p ∧ q := by\n  constructor\n  exact hp\n  exact hq\n"
+    hyps = "p q : Prop\nhp : p\nhq : q\n"
+    left, right = f"case left\n{hyps}⊢ p", f"case right\n{hyps}⊢ q"
+
+    def pos(line, column):
+        return {"line": line + 1, "column": column}
+
+    def tactic(line, end_col, goals, text):
+        return {"start_pos": pos(line, 2), "end_pos": pos(line, end_col), "goals": goals, "tactic": text,
+                "proof_state": 0, "used_constants": []}
+
+    ex = Extraction.model_validate({
+        "declarations": [{"name": "t", "kind": "theorem", "range": {"synthetic": False, "start": pos(1, 0), "finish": pos(4, 10)}}],
+        "tactics": [
+            tactic(2, 13, f"{hyps}⊢ p ∧ q", "constructor"),
+            tactic(3, 10, f"{left}\n\n{right}", "exact hp"),
+            tactic(4, 10, right, "exact hq"),
+        ],
+        "messages": [],
+        "local_constants": None,
+    })
+    nodes = {n.id: n for n in build_graph(source, ex).nodes}
+    assert nodes["decl:t/1"].goals_after == f"{left}\n\n{right}"
+    assert nodes["decl:t/2"].goals_after == right  # not "": `right` is still open
+    assert nodes["decl:t/3"].goals_after == ""
+
+
+def test_goals_after_with_bullets():
+    """A bullet or `induction` alternative sees only its own goal, so it ends with no goals left."""
+    _, nodes, _ = load("branches")
+    assert nodes["decl:and_swap/4"].goals_after == ""  # · exact hq
+    _, nodes, _ = load("basic")
+    assert nodes["decl:add_zero'/2"].goals_after == ""  # | zero => rfl
+
+
 def test_without_metaprogram_output():
     """If the metaprogram did not run, steps and their lemmas are still there."""
     source = (FIXTURES / "basic.lean").read_text(encoding="utf-8")

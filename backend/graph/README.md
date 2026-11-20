@@ -100,8 +100,11 @@ but not in the previous step's goal was introduced by the previous step (`have`,
 different branches from being treated as one sequence: `ih` in the `succ` branch belongs to the
 `induction` step, not to whatever ran last in the `zero` branch.
 
-**Goals after a step** are the next step's goals on the same branch. They are `""` when nothing
-is left to prove, and `null` when unknown (for example after an error).
+**Goals after a step** are the next step's goals on the same branch. When the step closes its
+branch, they are the goals that were already waiting beside it (`exact hp` right after
+`constructor`, without bullets, leaves `case right`). They are `""` when nothing is left to prove,
+which is always the case at the end of a bullet or an `induction`/`cases` alternative, since those
+only see their own goal. They are `null` when unknown (for example after an error).
 
 **Errors:** a node has `ok: false` if Lean reported an error inside it, or if it contains
 `sorry`/`admit`. Lean only warns about `sorry`, and at the declaration's name, so steps are checked

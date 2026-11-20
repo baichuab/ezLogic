@@ -8,7 +8,7 @@ from lean_interact.interface import Pos as LeanPos
 from lean_interact.interface import Range
 
 from .extract import ConstantInfo, Declaration, Extraction
-from .goals import case_tag, continues, hypothesis_names
+from .goals import case_tag, continues, hypothesis_names, split_goals
 from .model import DECLARATION, EXTERNAL, STEP, USES, USES_HYP, Edge, LeanMessage, Node, ProofGraph
 
 # Lean 4.36 writes "declaration uses `sorry`"; older versions used straight quotes.
@@ -249,7 +249,10 @@ class _Builder:
             if i + 1 < len(sibs) and continues(s.tag, sibs[i + 1].tag):
                 self.nodes[ids[i]].goals_after = sibs[i + 1].goals
             elif decl_ok:
-                self.nodes[ids[i]].goals_after = ""  # the proof, or this branch of it, is done
+                # The step closed its goal. Goals that were already waiting beside it are still open
+                # (`exact hp` without bullets leaves `case right`); a bullet or `induction`
+                # alternative sees only its own goal, so there this is "".
+                self.nodes[ids[i]].goals_after = "\n\n".join(split_goals(s.goals)[1:])
         # A step's goal comes from the latest earlier sibling on the same branch: names that are
         # new in it were introduced by that sibling (have, obtain, intro, ...).
         for j, later in enumerate(sibs):
