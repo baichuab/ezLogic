@@ -6,7 +6,7 @@ import re
 import shutil
 
 from lean_interact import Command
-from lean_interact.interface import LeanError, Message, Range, Tactic
+from lean_interact.interface import LeanError, Message, Pos, Range, Tactic
 from pydantic import BaseModel
 
 from agent import lean
@@ -132,6 +132,22 @@ def _meta_output(messages: list[Message]) -> dict | None:
     return next((json.loads(m.data[len(MARKER) :]) for m in messages if m.data.startswith(MARKER)), None)
 
 
+def source_messages(messages: list[Message], last_line: int, meta_ran: bool) -> list[Message]:
+    """Lean's messages about the submitted source (whose last line is `last_line`, in Lean's
+    numbering). If the metaprogram did not run, the source broke it (e.g. an unclosed comment
+    swallowed it), so errors reported past the end are kept, moved to the source's last line."""
+    end = Pos(line=last_line, column=0)
+    out = []
+    for m in messages:
+        if m.data.startswith(MARKER):
+            continue
+        if m.start_pos.line <= last_line:
+            out.append(m)
+        elif not meta_ran and m.severity == "error":
+            out.append(m.model_copy(update={"start_pos": end, "end_pos": end}))
+    return out
+
+
 def extract(source: str) -> Extraction:
     """Elaborate `source` and collect declarations, tactics and dependencies. Blocking."""
     if not shutil.which(Config.LAKE_PATH):
@@ -157,11 +173,7 @@ def extract(source: str) -> Extraction:
             if d.range.start.line <= last_line
         ],
         tactics=[t for t in response.tactics if t.start_pos.line <= last_line],
-        messages=[
-            m
-            for m in response.messages
-            if m.start_pos.line <= last_line and not m.data.startswith(MARKER)
-        ],
+        messages=source_messages(response.messages, last_line, meta_ran=meta is not None),
         local_constants=meta and {x["name"]: x for x in meta["locals"]},
         constants=meta and {x["name"]: x for x in meta["constants"]} or {},
         lean_version=meta and meta["lean_version"],

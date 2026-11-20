@@ -11,7 +11,8 @@ import pytest
 from config import Config
 from graph import Extraction, build_graph, create_graph_sync
 from graph.build import is_interesting
-from graph.extract import ConstantInfo
+from graph.extract import ConstantInfo, source_messages
+from lean_interact.interface import Message, Pos
 from graph.goals import case_tag, continues, hypothesis_names
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -36,7 +37,7 @@ def test_goal_parsing():
     assert not continues("zero", "succ")
 
 
-@pytest.mark.parametrize("name", ["basic", "branches"])
+@pytest.mark.parametrize("name", ["basic", "branches", "sorry"])
 def test_graph_is_well_formed(name):
     graph, nodes, _ = load(name)
     assert len(nodes) == len(graph.nodes)  # unique ids
@@ -77,6 +78,26 @@ def test_errors_are_attached_to_nodes():
     assert not nodes["decl:double_add/2"].ok  # ring_nf (unknown without Mathlib)
     assert nodes["decl:double_add/1"].ok
     assert nodes["decl:double_eq"].ok
+
+
+def test_sorry_is_not_ok():
+    graph, nodes, _ = load("sorry")
+    assert not graph.ok  # Lean only warns about `sorry`
+    assert not nodes["decl:s"].ok
+    assert not nodes["decl:s/3"].ok  # the `sorry` step itself
+    assert nodes["decl:s/1"].ok and nodes["decl:s/2"].ok
+    assert nodes["decl:done"].ok and nodes["decl:done/1"].ok
+
+
+def test_errors_past_the_end_are_kept():
+    """An unclosed comment swallows the appended metaprogram; Lean's error is reported inside it."""
+    msg = Message(start_pos=Pos(line=44, column=0), severity="error", data="unterminated comment")
+    info = Message(start_pos=Pos(line=50, column=0), severity="info", data="ignored")
+    inside = Message(start_pos=Pos(line=2, column=0), severity="error", data="kept as is")
+    kept = source_messages([inside, msg, info], last_line=3, meta_ran=False)
+    assert [(m.data, m.start_pos.line) for m in kept] == [("kept as is", 2), ("unterminated comment", 3)]
+    # When the metaprogram ran, anything past the end is about the metaprogram, not the source.
+    assert [m.data for m in source_messages([inside, msg], last_line=3, meta_ran=True)] == ["kept as is"]
 
 
 def test_nesting():
@@ -138,3 +159,7 @@ def test_live_lean():
     assert graph.ok
     assert [n.id for n in graph.nodes] == ["decl:t", "decl:t/1"]
     assert graph.nodes[1].goals_after == ""
+
+    graph = create_graph_sync("theorem t : 1 = 1 := rfl\n/- oops\n")
+    assert not graph.ok
+    assert [m.text for m in graph.messages] == ["unterminated comment"]

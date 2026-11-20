@@ -65,6 +65,10 @@ from `constants`. Those are classified with a second command that only repeats t
 Because `import Lean` is added as the first line, every position Lean reports is one line too far
 down; `Extraction.line_offset` records this and the builder subtracts it.
 
+Messages Lean reports past the end of the source belong to the metaprogram and are dropped, unless
+the metaprogram produced no output. Then the source broke it (an unclosed `/-` comment swallows
+it, for example), so those errors are kept and moved to the source's last line.
+
 ### 2. Building the graph (`build.py`)
 
 **Nodes**
@@ -95,9 +99,10 @@ different branches from being treated as one sequence: `ih` in the `succ` branch
 **Goals after a step** are the next step's goals on the same branch. They are `""` when nothing
 is left to prove, and `null` when unknown (for example after an error).
 
-**Errors:** a node has `ok: false` if Lean reported an error, or `sorry`, inside it. Lean's
-messages are also returned in `messages`. The graph is still built for proofs with errors, which
-is when an explanation is most useful.
+**Errors:** a node has `ok: false` if Lean reported an error inside it, or if it contains
+`sorry`/`admit`. Lean only warns about `sorry`, and at the declaration's name, so steps are checked
+for the word in their own code. Lean's messages are also returned in `messages`. The graph is still
+built for proofs with errors, which is when an explanation is most useful.
 
 **Order:** declarations are sorted so each comes after the declarations it uses, with ties broken
 by source position (networkx `lexicographical_topological_sort`). Each declaration is followed by
@@ -137,6 +142,10 @@ together with `graph.GRAPH_VERSION`, which is bumped whenever the output format 
   sources that `import Mathlib` fail (this also affects snippet checks).
 - **Hypothesis use is found by name.** Tactics that use hypotheses without naming them (`omega`,
   `simp_all`, `assumption`, `simp [*]`) get no `uses_hyp` edge.
+- **Reused hypothesis names give wrong `uses_hyp` edges.** Introductions are found by comparing
+  names between goal states, so re-introducing a name that already exists is not seen. In
+  `intro h; have h : q := hq; exact h`, `exact h` points to the `intro` step instead of the `have`,
+  and the `have` itself gets an edge to the `intro` because its code mentions `h`.
 - **Every tactic is a step.** Short runs of tactics are not grouped yet.
 - **`import Lean`** is added to every source. This adds a moment to each run and could in rare
   cases clash with a user declaration of the same name.

@@ -9,7 +9,9 @@ from .extract import ConstantInfo, Extraction
 from .goals import case_tag, continues, hypothesis_names
 from .model import DECLARATION, EXTERNAL, STEP, USES, USES_HYP, Edge, LeanMessage, Node, ProofGraph
 
-SORRY_WARNING = "declaration uses 'sorry'"
+# Lean 4.36 writes "declaration uses `sorry`"; older versions used straight quotes.
+SORRY_WARNING = re.compile(r"declaration uses [`']sorry[`']")
+SORRY_TOKEN = re.compile(r"(?<![\w.'])(sorry|admit)(?![\w'])")
 
 # Lemmas tactics insert as plumbing; showing them would only add noise.
 PLUMBING = frozenset(
@@ -72,7 +74,9 @@ class _Builder:
         self.decls: list[tuple[str, str, Span]] = []  # (node id, declared name, span), source order
         self.by_name: dict[str, str] = {}  # declared name -> node id (examples have no name)
         self.problems = [
-            self._pos(m.start_pos) for m in ex.messages if m.severity == "error" or SORRY_WARNING in m.data
+            self._pos(m.start_pos)
+            for m in ex.messages
+            if m.severity == "error" or SORRY_WARNING.search(m.data)
         ]
 
     # --- helpers -------------------------------------------------------------------------
@@ -182,7 +186,8 @@ class _Builder:
                         parent_id=stack[-1] if stack else decl_id,
                         code=code,
                         goals_before=t.goals,
-                        ok=self._ok(span),
+                        # Lean reports `sorry` at the declaration name, so check the step's code.
+                        ok=self._ok(span) and not SORRY_TOKEN.search(code),
                         **_location(span),
                     )
                 )
