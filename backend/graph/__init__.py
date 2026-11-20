@@ -1,5 +1,5 @@
-"""Proof graphs: split a Lean source into nodes (declarations, tactic steps, library lemmas) and
-dependency edges, so a proof can be explained one piece at a time.
+"""Proof graphs: split a Lean source into declarations, tactic steps and library lemmas, linked by
+their dependencies. See README.md.
 
     graph = await create_graph(source)
 """
@@ -8,10 +8,9 @@ import asyncio
 
 from .build import build_graph
 from .extract import Extraction, ExtractionError, extract
-from .model import Edge, Node, ProofGraph
+from .model import Edge, LeanMessage, Node, ProofGraph
 
-# Bump when extraction or building changes the output, so anything that caches graphs (e.g. keyed
-# by a hash of the source) knows to rebuild them.
+# Bump when the output changes, so anything caching graphs (e.g. by source hash) rebuilds them.
 GRAPH_VERSION = 1
 
 
@@ -29,6 +28,7 @@ __all__ = [
     "Edge",
     "Extraction",
     "ExtractionError",
+    "LeanMessage",
     "Node",
     "ProofGraph",
     "build_graph",

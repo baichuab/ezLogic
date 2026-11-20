@@ -205,17 +205,14 @@ async def verify_file(request: FileRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/api/graph")
+@app.post("/api/graph", response_model=proof_graph.ProofGraph)
 async def create_graph(request: GraphRequest):
-    """Split a Lean source into a dependency graph of declarations, tactic steps and lemmas.
-
-    Nothing is stored; the graph is rebuilt on every call.
-    """
+    """Split a Lean source into a dependency graph of declarations, tactic steps and lemmas
+    (see graph/README.md). Nothing is stored; the graph is rebuilt on every call."""
     try:
-        graph = await proof_graph.create_graph(request.code)
+        return await proof_graph.create_graph(request.code)
     except proof_graph.ExtractionError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    return graph.to_dict()
 
 
 if __name__ == "__main__":

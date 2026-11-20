@@ -1,24 +1,13 @@
-"""Run Lean on a proof and collect the raw data the graph is built from.
-
-One REPL command does all the work. The source is sent as
-
-    import Lean          <- gives the metaprogram access to Lean's API (shifts lines by 1)
-    <user source>
-    <metaprogram>        <- prints every constant the source defined, with its dependencies
-
-with `all_tactics` (each tactic, its position, the goal before it and the constants it used) and
-`declarations` (each declaration's name, kind and range). Positions are shifted back so they
-refer to the user's source.
-
-A failed declaration is stored as `sorry`, so its tactics can use lemmas that the metaprogram
-never sees. Those are classified with a second, cheap command that only imports the same headers.
-"""
+"""Run Lean on a proof and collect what the graph is built from. See README.md."""
 
 import json
 import logging
 import re
 import shutil
-from dataclasses import asdict, dataclass, field
+
+from lean_interact import Command
+from lean_interact.interface import LeanError, Message, Range, Tactic
+from pydantic import BaseModel
 
 from agent import lean
 from config import Config
@@ -26,14 +15,12 @@ from config import Config
 log = logging.getLogger(__name__)
 
 MARKER = "EZLOGIC_GRAPH "
-PRELUDE = "import Lean\n"
-LINE_SHIFT = PRELUDE.count("\n")
+PRELUDE = "import Lean\n"  # the metaprogram needs Lean's API; shifts every line by one
 
-# Prints {"lean_version", "locals": [{name, kind, uses}], "constants": [{name, canonical, kind,
-# statement}]}. `locals` are constants defined after the imports (the user's declarations plus
-# auxiliary ones Lean generates: match_1, proof_1, structure projections, ...). `constants`
-# classifies each imported constant those use, plus the names in NAMES. `canonical` drops
-# internal name components, so `Nat.foo._simp_1` maps to the lemma `Nat.foo`.
+# Prints MARKER + {"lean_version", "locals": [{name, kind, uses}], "constants": [{name, canonical,
+# kind, statement}]}. `locals`: every constant defined after the imports (the user's declarations
+# and the auxiliary ones Lean generates for them). `constants`: the imported constants those use,
+# plus NAMES. `canonical` drops internal name parts (`Nat.foo._simp_1` -> `Nat.foo`).
 _META = r"""
 
 open Lean Meta in
@@ -79,139 +66,59 @@ class ExtractionError(Exception):
     """Lean could not be run (not installed, REPL failure, timeout, ...)."""
 
 
-@dataclass
-class Span:
-    """A source range. Lines are 1-based, columns 0-based (in characters)."""
-
-    start_line: int
-    start_col: int
-    end_line: int
-    end_col: int
-
-    @property
-    def start(self) -> tuple[int, int]:
-        return (self.start_line, self.start_col)
-
-    @property
-    def end(self) -> tuple[int, int]:
-        return (self.end_line, self.end_col)
-
-    def contains(self, other: "Span") -> bool:
-        return self.start <= other.start and other.end <= self.end
-
-    def contains_pos(self, pos: tuple[int, int]) -> bool:
-        return self.start <= pos < self.end or pos == self.start
-
-
-@dataclass
-class Declaration:
+class Declaration(BaseModel):
     name: str  # full name; "_example" for examples
     kind: str  # theorem, definition, structure, instance, example, ...
-    span: Span
-    statement: str | None  # pretty-printed type, when the declaration has one
+    range: Range
+    statement: str | None = None  # pretty-printed type
 
 
-@dataclass
-class Tactic:
-    span: Span
-    text: str  # pretty-printed by Lean; may be "<failed to pretty print>"
-    goals: str  # goal state before the tactic runs
-    used_constants: list[str]
-
-
-@dataclass
-class Message:
-    severity: str  # error, warning, info
-    span: Span
-    text: str
-
-
-@dataclass
-class LocalConstant:
+class LocalConstant(BaseModel):
     name: str
     kind: str
     uses: list[str]
 
 
-@dataclass
-class ConstantInfo:
+class ConstantInfo(BaseModel):
     name: str
     canonical: str
     kind: str  # theorem, definition, projection, instance, ... or "unknown"
     statement: str | None = None
 
 
-@dataclass
-class Extraction:
+class Extraction(BaseModel):
+    """Lean's output for one source. Positions are as Lean reported them: subtract `line_offset`
+    to get lines in the submitted source."""
+
+    line_offset: int = PRELUDE.count("\n")
     declarations: list[Declaration]
     tactics: list[Tactic]
     messages: list[Message]
-    # None when the metaprogram produced no output (e.g. the source left a comment unclosed)
-    local_constants: dict[str, LocalConstant] | None
-    constants: dict[str, ConstantInfo] = field(default_factory=dict)
+    local_constants: dict[str, LocalConstant] | None  # None if the metaprogram did not run
+    constants: dict[str, ConstantInfo] = {}
     lean_version: str | None = None
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "Extraction":
-        locals_ = d.get("local_constants")
-        return cls(
-            declarations=[Declaration(**{**x, "span": Span(**x["span"])}) for x in d["declarations"]],
-            tactics=[Tactic(**{**x, "span": Span(**x["span"])}) for x in d["tactics"]],
-            messages=[Message(**{**x, "span": Span(**x["span"])}) for x in d["messages"]],
-            local_constants=None
-            if locals_ is None
-            else {k: LocalConstant(**v) for k, v in locals_.items()},
-            constants={k: ConstantInfo(**v) for k, v in d.get("constants", {}).items()},
-            lean_version=d.get("lean_version"),
-        )
-
-
-def _lean_strings(xs) -> str:
-    # JSON string escapes are valid Lean string literal escapes.
-    return ", ".join(json.dumps(x, ensure_ascii=False) for x in xs)
 
 
 def _metaprogram(names: list[str], include_locals: bool) -> str:
+    # JSON string escapes are valid Lean string escapes.
     return (
-        _META.replace("NAMES", _lean_strings(names))
+        _META.replace("NAMES", ", ".join(json.dumps(n, ensure_ascii=False) for n in names))
         .replace("INCLUDE_LOCALS", "true" if include_locals else "false")
         .replace("MARKER", MARKER)
     )
 
 
-_HEADER_LINE = re.compile(r"\s*(--.*)?$|\s*(public\s+|meta\s+)*import\s")
-
-
 def import_header(source: str) -> str:
-    """The leading `import` lines of a source file (blank lines and line comments allowed)."""
-    lines = []
+    """The leading `import` lines of a source (blank lines and `--` comments allowed)."""
+    header = []
     for line in source.splitlines():
-        if not _HEADER_LINE.match(line):
+        if not re.match(r"\s*(--.*)?$|\s*(public\s+|meta\s+)*import\s", line):
             break
-        lines.append(line)
-    return "\n".join(lines)
+        header.append(line)
+    return "\n".join(header)
 
 
-def _pos(p) -> tuple[int, int]:
-    return (p.line - LINE_SHIFT, p.column)
-
-
-def _span(start, end) -> Span:
-    s = _pos(start)
-    e = _pos(end) if end is not None else s
-    return Span(s[0], s[1], e[0], e[1])
-
-
-def _parse_meta_output(data: str) -> dict:
-    return json.loads(data[len(MARKER) :])
-
-
-def _run(cmd):
-    from lean_interact.interface import LeanError
-
+def _run(cmd: Command):
     try:
         response = lean.run_command(cmd)
     except Exception as e:  # REPL build/startup failures, timeouts, ...
@@ -221,14 +128,17 @@ def _run(cmd):
     return response
 
 
-def extract(source: str) -> Extraction:
-    """Elaborate `source` with Lean and collect declarations, tactics and dependencies. Blocking."""
-    from lean_interact import Command
+def _meta_output(messages: list[Message]) -> dict | None:
+    return next((json.loads(m.data[len(MARKER) :]) for m in messages if m.data.startswith(MARKER)), None)
 
+
+def extract(source: str) -> Extraction:
+    """Elaborate `source` and collect declarations, tactics and dependencies. Blocking."""
     if not shutil.which(Config.LAKE_PATH):
         raise ExtractionError(lean.LEAN_MISSING)
 
-    n_lines = source.count("\n") + 1
+    offset = PRELUDE.count("\n")
+    last_line = source.count("\n") + 1 + offset
     response = _run(
         Command(
             cmd=PRELUDE + source + "\n\n" + _metaprogram([], include_locals=True),
@@ -236,65 +146,35 @@ def extract(source: str) -> Extraction:
             declarations=True,
         )
     )
-
-    def in_source(span: Span) -> bool:
-        return 1 <= span.start_line <= n_lines
-
-    meta = None
-    messages = []
-    for m in response.messages:
-        if m.data.startswith(MARKER):
-            meta = _parse_meta_output(m.data)
-            continue
-        span = _span(m.start_pos, m.end_pos)
-        if span.start_line < 1:  # reported on the `import Lean` line
-            span = Span(1, 0, 1, 0)
-        if in_source(span):
-            messages.append(Message(severity=m.severity, span=span, text=m.data))
-        else:
-            log.warning("graph metaprogram message: %s: %s", m.severity, m.data)
+    meta = _meta_output(response.messages)
     if meta is None:
-        log.warning("graph metaprogram produced no output; declaration dependencies are unavailable")
+        log.warning("graph metaprogram produced no output; declaration dependencies unavailable")
 
-    declarations = []
-    for d in response.declarations:
-        span = _span(d.range.start, d.range.finish)
-        if not in_source(span):
-            continue
-        statement = d.type.pp if d.type is not None else None
-        declarations.append(Declaration(name=d.full_name, kind=d.kind, span=span, statement=statement))
-
-    tactics = []
-    for t in response.tactics:
-        span = _span(t.start_pos, t.end_pos)
-        if in_source(span):
-            tactics.append(
-                Tactic(span=span, text=t.tactic, goals=t.goals, used_constants=list(t.used_constants))
-            )
-
-    extraction = Extraction(
-        declarations=declarations,
-        tactics=tactics,
-        messages=messages,
-        local_constants=None
-        if meta is None
-        else {x["name"]: LocalConstant(**x) for x in meta["locals"]},
-        constants={} if meta is None else {x["name"]: ConstantInfo(**x) for x in meta["constants"]},
-        lean_version=None if meta is None else meta["lean_version"],
+    ex = Extraction(
+        declarations=[
+            Declaration(name=d.full_name, kind=d.kind, range=d.range, statement=d.type and d.type.pp)
+            for d in response.declarations
+            if d.range.start.line <= last_line
+        ],
+        tactics=[t for t in response.tactics if t.start_pos.line <= last_line],
+        messages=[
+            m
+            for m in response.messages
+            if m.start_pos.line <= last_line and not m.data.startswith(MARKER)
+        ],
+        local_constants=meta and {x["name"]: x for x in meta["locals"]},
+        constants=meta and {x["name"]: x for x in meta["constants"]} or {},
+        lean_version=meta and meta["lean_version"],
     )
 
-    # Classify tactic constants the first pass did not see (used inside failed declarations).
-    known = set(extraction.constants) | set(extraction.local_constants or ())
-    missing = sorted({c for t in tactics for c in t.used_constants} - known)
+    # A failed declaration is stored as `sorry`, so lemmas its tactics used are not in `constants`
+    # yet. Classify them with a second command that only repeats the imports.
+    known = set(ex.constants) | set(ex.local_constants or ())
+    missing = sorted({c for t in ex.tactics for c in t.used_constants} - known)
     if missing:
-        header = import_header(source)
-        response = _run(Command(cmd=PRELUDE + header + "\n\n" + _metaprogram(missing, False)))
-        for m in response.messages:
-            if m.data.startswith(MARKER):
-                for x in _parse_meta_output(m.data)["constants"]:
-                    extraction.constants[x["name"]] = ConstantInfo(**x)
-                break
-        else:
-            log.warning("graph constant classification produced no output")
-
-    return extraction
+        response = _run(
+            Command(cmd=PRELUDE + import_header(source) + "\n\n" + _metaprogram(missing, False))
+        )
+        for x in (_meta_output(response.messages) or {}).get("constants", []):
+            ex.constants[x["name"]] = ConstantInfo(**x)
+    return ex

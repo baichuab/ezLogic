@@ -8,3 +8,5 @@ psycopg[binary]>=3.2
 openai>=1.50
 # Python interface to the Lean 4 REPL (used for quick snippet checks)
 lean-interact>=0.11
+# Graph structure and ordering for proof graphs (backend/graph)
+networkx>=3.2
