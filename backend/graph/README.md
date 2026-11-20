@@ -37,41 +37,41 @@ source ──► extract.py ──► Extraction ──► build.py ──► Pr
 
 ### 1. Extraction (`extract.py`)
 
-The source is sent to the Lean REPL (via `lean-interact`) as one command:
-
-```
-import Lean        ← added so the metaprogram below can use Lean's API
-<the source>
-<metaprogram>      ← a short Lean program that prints dependency data as JSON
-```
-
-with two REPL options switched on:
+The source is sent to the Lean REPL (via `lean-interact`) as one command, `import Lean` followed by
+the source, with two REPL options switched on:
 
 - `all_tactics`: every tactic with its position, the goal before it, and the constants it used;
-- `declarations`: every declaration with its name, kind, position and statement.
+- `declarations`: every declaration with its name, kind, position and statement (only the part
+  after the colon).
 
-The metaprogram runs after the source, so it can see everything the source defined. It prints:
+A second command, the metaprogram, runs on the state the source left (`env` of the first
+response). `import Lean` gives it Lean's API. Because it is a separate command, nothing in the
+source can swallow it: an unclosed `/-` comment or an unfinished `by` at the end still leaves the
+dependency data intact. It prints:
 
-- **locals:** every constant the source created, with the constants it uses. This includes the
-  helpers Lean generates behind the scenes (`foo.match_1`, `foo.proof_1`, structure projections).
-- **constants:** each library constant those use, with its kind (theorem, definition, instance,
-  projection, ...), its statement if it is a theorem, and its *canonical* name. The canonical name
-  maps generated names back to the real lemma: `Nat.add_left_cancel_iff._simp_1` becomes
-  `Nat.add_left_cancel_iff`.
+- **locals:** every constant the source created, with the constants it uses, its source range and
+  its full type. This includes the helpers Lean generates behind the scenes (`foo.match_1`,
+  `foo.proof_1`, structure projections).
+- **constants:** each library constant those use, plus every constant the tactics used, with its
+  kind (theorem, definition, instance, projection, ...), its statement if it is a theorem, and its
+  *canonical* name. The canonical name maps generated names back to the real lemma:
+  `Nat.add_left_cancel_iff._simp_1` becomes `Nat.add_left_cancel_iff`. The tactics' constants are
+  passed in because a declaration that fails is stored by Lean as `sorry`, so the lemmas its
+  tactics used are missing from its uses.
 
-A declaration that fails is stored by Lean as `sorry`, so lemmas its tactics used would be missing
-from `constants`. Those are classified with a second command that only repeats the imports.
+If the metaprogram fails, the graph is still built without declaration dependencies. The tactics'
+constants are then classified in a fresh command that only repeats the imports, so steps keep
+their lemmas.
 
-The metaprogram also prints each constant's source range. The REPL's `declarations` list skips
-declarations inside `mutual ... end` blocks; the builder recovers them from these ranges (any
-named constant written in the source that isn't part of a reported declaration).
+The REPL's `declarations` list skips declarations inside `mutual ... end` blocks; the builder
+recovers them from the locals' ranges: named constants written in the source that aren't part of
+a reported declaration and whose range starts at a declaration keyword. That leaves out other
+constants Lean gives a range, such as instances made by `deriving` and the parsers `notation`
+creates.
 
 Because `import Lean` is added as the first line, every position Lean reports is one line too far
-down; `Extraction.line_offset` records this and the builder subtracts it.
-
-Messages Lean reports past the end of the source belong to the metaprogram and are dropped, unless
-the metaprogram produced no output. Then the source broke it (an unclosed `/-` comment swallows
-it, for example), so those errors are kept and moved to the source's last line.
+down; `Extraction.line_offset` records this and the builder subtracts it. Lean reports some errors
+at the end of the input; those are moved to the source's last line.
 
 ### 2. Building the graph (`build.py`)
 
@@ -79,7 +79,7 @@ it, for example), so those errors are kept and moved to the source's last line.
 
 | Kind | One per | Notes |
 | --- | --- | --- |
-| `declaration` | theorem, lemma, def, structure, instance, example | `code` is the exact source text; `statement` is its type |
+| `declaration` | theorem, lemma, def, structure, instance, example | `code` is the exact source text; `statement` is its full type, binders and hypotheses included (`∀ (a b c : Nat), a ≤ b → b ≤ c → …`). Examples have no constant, so theirs is the part after the colon. |
 | `step` | tactic | Nested under the declaration, or under the tactic containing it: the branches of `induction`/`cases`, or the `by` block inside a `have`. Nesting comes from source positions. |
 | `external` | library lemma used | Only real lemmas: definitions, instances, projections, tactic internals (`Lean.*`, `Mathlib.Tactic.*`) and plumbing (`Eq.mpr`, `congrArg`, ...) are left out |
 
@@ -89,7 +89,11 @@ it, for example), so those errors are kept and moved to the source's last line.
   looking through its generated helpers (so a `match` inside `foo` counts as `foo`).
 - `uses`, step → lemma or declaration: the lemmas a tactic applied. Definitions appear in nearly
   every goal that mentions them, so a step only links to one if it names it (`unfold double`).
-- `uses`, declaration → lemma: only for term-mode proofs, which have no steps to carry these.
+- `uses`, declaration → lemma: the lemmas a term-mode proof uses, which has no steps to carry
+  them. In a proof that mixes a term with `by` blocks (`⟨Nat.le_succ_of_le h, by trivial⟩`), the
+  lemmas its steps don't use and that its own text names.
+- `uses`, example → declaration: Lean keeps no constant for an example, so these come from the
+  declarations its code names.
 - `uses_hyp`, step → step: the step names a hypothesis that an earlier step introduced. The
   `label` is the hypothesis name.
 
@@ -100,11 +104,13 @@ but not in the previous step's goal was introduced by the previous step (`have`,
 different branches from being treated as one sequence: `ih` in the `succ` branch belongs to the
 `induction` step, not to whatever ran last in the `zero` branch.
 
-**Goals after a step** are the next step's goals on the same branch. When the step closes its
-branch, they are the goals that were already waiting beside it (`exact hp` right after
-`constructor`, without bullets, leaves `case right`). They are `""` when nothing is left to prove,
-which is always the case at the end of a bullet or an `induction`/`cases` alternative, since those
-only see their own goal. They are `null` when unknown (for example after an error).
+**Goals after a step** are the goals of the next step that ran on what it left: the next step on
+the same branch, or the next step on another goal that was already open beside it (`exact hp`
+right after `constructor`, without bullets, leaves `case right`; after `swap` both goals remain,
+in the new order). When no step follows, they are the other goals that were waiting beside it.
+They are `""` when nothing is left to prove, which is always the case at the end of a bullet or
+an `induction`/`cases` alternative, since those only see their own goal. They are `null` when
+unknown (for example after an error).
 
 **Errors:** a node has `ok: false` if Lean reported an error inside it, or if it contains
 `sorry`/`admit`. Lean only warns about `sorry`, and at the declaration's name, so steps are checked
@@ -132,7 +138,7 @@ source order. Nesting (`parent_id`) is not an edge: drawn as parent → child ar
   "nodes": [
     {"id": "decl:t", "kind": "declaration", "label": "t", "decl_kind": "theorem",
      "code": "theorem t (a b : Nat) : a + b = b + a := by\n  exact Nat.add_comm a b",
-     "statement": "a + b = b + a", "start_line": 1, "start_col": 0, "end_line": 2, "end_col": 24,
+     "statement": "∀ (a b : Nat), a + b = b + a", "start_line": 1, "start_col": 0, "end_line": 2, "end_col": 24,
      "ok": true, "order_index": 0, ...},
     {"id": "decl:t/1", "kind": "step", "label": "exact Nat.add_comm a b", "parent_id": "decl:t",
      "goals_before": "a b : Nat\n⊢ a + b = b + a", "goals_after": "", "order_index": 1, ...},
@@ -161,7 +167,13 @@ together with `graph.GRAPH_VERSION`, which is bumped whenever the output format 
   and the `have` itself gets an edge to the `intro` because its code mentions `h`.
 - **Every tactic is a step.** Short runs of tactics are not grouped yet.
 - **`import Lean`** is added to every source. This adds a moment to each run and could in rare
-  cases clash with a user declaration of the same name.
+  cases clash with a user declaration of the same name. A source that starts with `module` (Lean's
+  module system) fails, because `module` has to come before any import.
+- **Examples in term mode** only link to declarations in the source, not to library lemmas: Lean
+  keeps no constant for them, so there is no record of what they use.
+- **Private declarations** have not been checked with Lean yet: if the REPL reports them under a
+  different name than Lean uses internally, their edges are missing (see
+  `test_live_private_declaration`).
 
 ## Files
 

@@ -34,7 +34,7 @@ open Lean Meta in
     | .opaqueInfo _ => "opaque" | .quotInfo _ => "quot" | .inductInfo _ => "inductive"
     | .ctorInfo _ => "constructor" | .recInfo _ => "recursor"
   let mut refs : NameSet :=
-    (#[NAMES] : Array String).foldl (fun s str => (Syntax.decodeNameLit ("`" ++ str)).elim s s.insert) {}
+    ((NAMES : String).splitOn "\n").foldl (fun s str => (Syntax.decodeNameLit ("`" ++ str)).elim s s.insert) {}
   let mut locals : Array Json := #[]
   if INCLUDE_LOCALS then
     for (n, ci) in env.constants.map₂.toList do
@@ -108,9 +108,10 @@ class Extraction(BaseModel):
 
 
 def _metaprogram(names: list[str], include_locals: bool) -> str:
-    # JSON string escapes are valid Lean string escapes.
+    # One string literal, split in Lean: a literal array of thousands of names would be slow to
+    # elaborate. JSON string escapes are valid Lean string escapes.
     return (
-        _META.replace("NAMES", ", ".join(json.dumps(n, ensure_ascii=False) for n in names))
+        _META.replace("NAMES", json.dumps("\n".join(names), ensure_ascii=False))
         .replace("INCLUDE_LOCALS", "true" if include_locals else "false")
         .replace("MARKER", MARKER)
     )
@@ -140,20 +141,26 @@ def _meta_output(messages: list[Message]) -> dict | None:
     return next((json.loads(m.data[len(MARKER) :]) for m in messages if m.data.startswith(MARKER)), None)
 
 
-def source_messages(messages: list[Message], last_line: int, meta_ran: bool) -> list[Message]:
-    """Lean's messages about the submitted source (whose last line is `last_line`, in Lean's
-    numbering). If the metaprogram did not run, the source broke it (e.g. an unclosed comment
-    swallowed it), so errors reported past the end are kept, moved to the source's last line."""
+def source_messages(messages: list[Message], last_line: int) -> list[Message]:
+    """Lean's messages about the submitted source, whose last line is `last_line` in Lean's
+    numbering. Anything reported past it (Lean reports some errors at the end of the input) is
+    moved to that line, so every message points into the source."""
     end = Pos(line=last_line, column=0)
-    out = []
-    for m in messages:
-        if m.data.startswith(MARKER):
-            continue
-        if m.start_pos.line <= last_line:
-            out.append(m)
-        elif not meta_ran and m.severity == "error":
-            out.append(m.model_copy(update={"start_pos": end, "end_pos": end}))
-    return out
+    return [
+        m if m.start_pos.line <= last_line else m.model_copy(update={"start_pos": end, "end_pos": end})
+        for m in messages
+        if not m.data.startswith(MARKER)
+    ]
+
+
+def _run_meta(names: list[str], include_locals: bool, env: int | None, prefix: str = "") -> dict | None:
+    """Run the metaprogram; its output, or None if it failed (logged, never raised)."""
+    try:
+        response = _run(Command(cmd=prefix + _metaprogram(names, include_locals), env=env))
+    except ExtractionError as e:
+        log.warning("graph metaprogram failed: %s", e)
+        return None
+    return _meta_output(response.messages)
 
 
 def extract(source: str) -> Extraction:
@@ -161,40 +168,31 @@ def extract(source: str) -> Extraction:
     if not shutil.which(Config.LAKE_PATH):
         raise ExtractionError(lean.LEAN_MISSING)
 
-    offset = PRELUDE.count("\n")
-    last_line = source.count("\n") + 1 + offset
-    response = _run(
-        Command(
-            cmd=PRELUDE + source + "\n\n" + _metaprogram([], include_locals=True),
-            all_tactics=True,
-            declarations=True,
-        )
-    )
-    meta = _meta_output(response.messages)
-    if meta is None:
-        log.warning("graph metaprogram produced no output; declaration dependencies unavailable")
+    last_line = source.count("\n") + 1 + PRELUDE.count("\n")
+    response = _run(Command(cmd=PRELUDE + source, all_tactics=True, declarations=True))
 
-    ex = Extraction(
+    # The metaprogram runs as its own command on the state the source left, so nothing in the
+    # source (an unclosed comment, an unfinished `by` at the end) can swallow it. The constants
+    # the tactics used are passed in, so lemmas used by failed declarations (stored as `sorry`,
+    # so missing from their constants' uses) are classified too.
+    used = sorted({c for t in response.tactics for c in t.used_constants})
+    meta = _run_meta(used, include_locals=True, env=response.env)
+    if meta is not None:
+        local_constants, constants = {x["name"]: x for x in meta["locals"]}, meta["constants"]
+    else:
+        log.warning("graph metaprogram produced no output; declaration dependencies unavailable")
+        # Still classify the tactics' lemmas, in a fresh command that only repeats the imports.
+        header = PRELUDE + import_header(source) + "\n\n"
+        local_constants, constants = None, (_run_meta(used, False, None, header) or {}).get("constants", [])
+    return Extraction(
         declarations=[
             Declaration(name=d.full_name, kind=d.kind, range=d.range, statement=d.type and d.type.pp)
             for d in response.declarations
-            if d.range.start.line <= last_line
         ],
-        tactics=[t for t in response.tactics if t.start_pos.line <= last_line],
-        messages=source_messages(response.messages, last_line, meta_ran=meta is not None),
-        local_constants=meta and {x["name"]: x for x in meta["locals"]},
-        constants=meta and {x["name"]: x for x in meta["constants"]} or {},
+        tactics=response.tactics,
+        messages=source_messages(response.messages, last_line),
+        local_constants=local_constants,
+        # `used` includes the source's own constants; those are described by `local_constants`.
+        constants={x["name"]: x for x in constants if x["name"] not in (local_constants or ())},
         lean_version=meta and meta["lean_version"],
     )
-
-    # A failed declaration is stored as `sorry`, so lemmas its tactics used are not in `constants`
-    # yet. Classify them with a second command that only repeats the imports.
-    known = set(ex.constants) | set(ex.local_constants or ())
-    missing = sorted({c for t in ex.tactics for c in t.used_constants} - known)
-    if missing:
-        response = _run(
-            Command(cmd=PRELUDE + import_header(source) + "\n\n" + _metaprogram(missing, False))
-        )
-        for x in (_meta_output(response.messages) or {}).get("constants", []):
-            ex.constants[x["name"]] = ConstantInfo(**x)
-    return ex

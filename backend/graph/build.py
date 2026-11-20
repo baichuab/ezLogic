@@ -1,6 +1,7 @@
 """Turn an `Extraction` into a `ProofGraph`. Pure Python; no Lean needed. See README.md."""
 
 import re
+from bisect import bisect_left
 from dataclasses import dataclass, field
 
 import networkx as nx
@@ -8,7 +9,7 @@ from lean_interact.interface import Pos as LeanPos
 from lean_interact.interface import Range
 
 from .extract import ConstantInfo, Declaration, Extraction
-from .goals import case_tag, continues, hypothesis_names, split_goals
+from .goals import case_tag, case_tags, continues, hypothesis_names, split_goals
 from .model import DECLARATION, EXTERNAL, STEP, USES, USES_HYP, Edge, LeanMessage, Node, ProofGraph
 
 # Lean 4.36 writes "declaration uses `sorry`"; older versions used straight quotes.
@@ -28,6 +29,16 @@ IGNORED_PREFIXES = ("Lean.", "Std.Tactic.", "Mathlib.Tactic.", "Aesop.", "Batter
 
 _IDENT = re.compile(r"[^\W\d][\w'!?]*(?:\.[^\W\d][\w'!?]*)*")
 
+# What a declaration written in the source starts with: optional doc comment, attributes and
+# modifiers, then a declaration keyword. Used to tell real declarations apart from other constants
+# Lean gives a source range (derived instances, `notation`/`syntax` parsers).
+_DECL_START = re.compile(
+    r"(?:/--.*?-/\s*)?(?:@\[[^\]]*\]\s*)*"
+    r"(?:(?:private|protected|public|noncomputable|partial|unsafe|nonrec|scoped|local)\s+)*"
+    r"(?:def|theorem|lemma|abbrev|instance|structure|class|inductive|opaque|axiom)\b",
+    re.S,
+)
+
 Pos = tuple[int, int]
 Span = tuple[Pos, Pos]
 
@@ -43,10 +54,14 @@ def is_interesting(info: ConstantInfo) -> bool:
     )
 
 
-def recovered_declarations(ex: Extraction) -> list[Declaration]:
+def recovered_declarations(ex: Extraction, source: str) -> list[Declaration]:
     """Declarations the REPL did not report (it skips those in `mutual` blocks): constants written
-    in the source (Lean has a range for them) that are not part of a reported declaration."""
+    in the source (Lean has a range for them) that are not part of a reported declaration, and
+    whose range starts at a declaration keyword. Derived instances and `notation`/`syntax`
+    parsers also have ranges, but inside or at other commands, so they are left out."""
     names = [d.name for d in ex.declarations]
+    reported = [((d.range.start.line, d.range.start.column), (d.range.finish.line, d.range.finish.column)) for d in ex.declarations]
+    lines = source.split("\n")
     found = []
     for c in sorted((ex.local_constants or {}).values(), key=lambda c: len(c.name)):
         if c.range is None or any(part.startswith("_") for part in c.name.split(".")):
@@ -54,6 +69,12 @@ def recovered_declarations(ex: Extraction) -> list[Declaration]:
         if any(c.name == n or c.name.startswith(n + ".") for n in names):
             continue  # e.g. a structure's fields, or `foo.match_1`
         sl, sc, el, ec = c.range
+        if any(start <= (sl, sc) <= end for start, end in reported):
+            continue  # e.g. an instance derived by a structure's `deriving` clause
+        line = sl - ex.line_offset
+        head = "\n".join(lines[line - 1 : line + 49])[sc:]  # enough for a doc comment and attributes
+        if not 1 <= line <= len(lines) or not _DECL_START.match(head):
+            continue
         start, finish = LeanPos(line=sl, column=sc), LeanPos(line=el, column=ec)
         found.append(
             Declaration(
@@ -79,6 +100,7 @@ def _location(span: Span) -> dict:
 @dataclass(eq=False)
 class _Step:
     decl: str  # declared name of the containing declaration
+    decl_id: str  # node id of the containing declaration
     span: Span
     goals: str
     used: list[str]
@@ -97,6 +119,7 @@ class _Builder:
         self.edges: dict[tuple, Edge] = {}
         self.tree = nx.DiGraph()  # declaration -> step -> nested step, children in source order
         self.steps: dict[str, _Step] = {}
+        self.decl_steps: dict[str, list[str]] = {}  # declaration node id -> its step ids, source order
         self.decls: list[tuple[str, str, Span]] = []  # (node id, declared name, span), source order
         self.by_name: dict[str, str] = {}  # declared name -> node id (examples have no name)
         self.problems = [
@@ -141,9 +164,13 @@ class _Builder:
             self.edges.setdefault((src, dst, kind, label), Edge(src=src, dst=dst, kind=kind, label=label))
 
     def _owner(self, name: str) -> str | None:
-        """The declared name that `name` is or belongs to (`foo.match_1` -> `foo`)."""
-        owners = [d for d in self.by_name if name == d or name.startswith(d + ".")]
-        return max(owners, key=len, default=None)
+        """The declared name that `name` is or belongs to (`foo.match_1` -> `foo`); the longest one
+        if several match."""
+        parts = name.split(".")
+        for k in range(len(parts), 0, -1):
+            if (candidate := ".".join(parts[:k])) in self.by_name:
+                return candidate
+        return None
 
     def _resolve(self, name: str) -> tuple[str, str]:
         """("decl", declared name), ("aux", name) for Lean-generated helpers, or ("ext", name)."""
@@ -168,10 +195,14 @@ class _Builder:
     # --- passes --------------------------------------------------------------------------
 
     def add_declarations(self) -> None:
-        declarations = self.ex.declarations + recovered_declarations(self.ex)
+        declarations = self.ex.declarations + recovered_declarations(self.ex, self.source)
+        local = self.ex.local_constants or {}
         for d in sorted(declarations, key=lambda d: (d.range.start.line, d.range.start.column)):
             span = self._span(d.range.start, d.range.finish)
             label = "example" if d.kind == "example" else d.name
+            # The REPL's statement is only the part after the colon (`double a ≤ 2 * c`); Lean's
+            # type of the constant also has the binders and hypotheses. Examples have no constant.
+            full = local[d.name].statement if d.name in local else None
             node_id = self._add_node(
                 Node(
                     id=f"decl:{label}",
@@ -179,7 +210,7 @@ class _Builder:
                     label=label,
                     decl_kind=d.kind,
                     code=self._text(span),
-                    statement=d.statement,
+                    statement=full or d.statement,
                     ok=self._ok(span),
                     **_location(span),
                 )
@@ -193,11 +224,16 @@ class _Builder:
         for t in self.ex.tactics:
             tactics.setdefault(self._span(t.start_pos, t.end_pos), t)
         ordered = sorted(tactics.items(), key=lambda kv: (kv[0][0], (-kv[0][1][0], -kv[0][1][1])))
+        starts = [span[0] for span, _ in ordered]
 
         for decl_id, decl_name, decl_span in self.decls:
             stack: list[str] = []  # enclosing steps
             count = 0
-            for span, t in ordered:
+            self.decl_steps[decl_id] = []
+            for j in range(bisect_left(starts, decl_span[0]), len(ordered)):
+                span, t = ordered[j]
+                if span[0] > decl_span[1]:
+                    break
                 if not _inside(decl_span, span):
                     continue
                 while stack and not _inside(self.steps[stack[-1]].span, span):
@@ -219,8 +255,10 @@ class _Builder:
                     )
                 )
                 self.tree.add_edge(stack[-1] if stack else decl_id, step_id)
+                self.decl_steps[decl_id].append(step_id)
                 self.steps[step_id] = _Step(
                     decl=decl_name,
+                    decl_id=decl_id,
                     span=span,
                     goals=t.goals,
                     used=t.used_constants,
@@ -246,8 +284,13 @@ class _Builder:
         ids = list(self.tree.successors(parent))
         sibs = [self.steps[i] for i in ids]
         for i, s in enumerate(sibs):
-            if i + 1 < len(sibs) and continues(s.tag, sibs[i + 1].tag):
-                self.nodes[ids[i]].goals_after = sibs[i + 1].goals
+            nxt = sibs[i + 1] if i + 1 < len(sibs) else None
+            # The next sibling ran on what this step left, if it works on this step's goal (or one
+            # descended from it) or on another goal that was already open beside it (after
+            # `swap`, or `exact hp` without bullets). A bullet or `induction` alternative sees
+            # only its own goal, so the next one's goal is not in its list.
+            if nxt is not None and (continues(s.tag, nxt.tag) or (nxt.tag and nxt.tag in case_tags(s.goals))):
+                self.nodes[ids[i]].goals_after = nxt.goals
             elif decl_ok:
                 # The step closed its goal. Goals that were already waiting beside it are still open
                 # (`exact hp` without bullets leaves `case right`); a bullet or `induction`
@@ -272,7 +315,8 @@ class _Builder:
     def _introducer(self, name: str, user_id: str, ancestors: set[str]) -> str | None:
         """The latest step whose introduction of `name` is in scope at step `user_id`."""
         user, best = self.steps[user_id], None
-        for step_id, s in self.steps.items():
+        for step_id in self.decl_steps[user.decl_id]:  # introductions never cross declarations
+            s = self.steps[step_id]
             visible = (
                 name in s.intro_after
                 and s.span[1] <= user.span[0]
@@ -295,17 +339,37 @@ class _Builder:
                 elif kind == "ext" and (ext := self._external(c)):
                     self._add_edge(step_id, ext, USES)
 
-        if self.ex.local_constants is None:
-            return
-        for decl_id, decl_name, _ in self.decls:
-            if decl_name not in self.ex.local_constants:
+        local = self.ex.local_constants
+        for decl_id, decl_name, span in self.decls:
+            if self.nodes[decl_id].decl_kind == "example":
+                # Lean keeps no constant for an example, so link the declarations its code names.
+                for t in set(_IDENT.findall(self._text(span))):
+                    for d in self.by_name:
+                        if d == t or d.endswith("." + t):
+                            self._add_edge(decl_id, self.by_name[d], USES)
                 continue
-            term_mode = self.tree.out_degree(decl_id) == 0
+            if local is None or decl_name not in local:
+                continue
+            top = [self.steps[c].span for c in self.tree.successors(decl_id)]
+            if top:
+                # Steps carry the lemmas they apply. Lemmas used in the term part of the proof
+                # (`⟨Nat.le_succ_of_le h, by trivial⟩`) belong to the declaration; requiring their
+                # name in its own text leaves out lemmas tactics insert behind the scenes.
+                term_tokens = set(_IDENT.findall(self._text(span, top)))
+                by_steps = {self._canonical(c) for st in self.decl_steps[decl_id] for c in self.steps[st].used}
             for kind, name in self._closure(decl_name):
                 if kind == "decl":
                     self._add_edge(decl_id, self.by_name[name], USES)
-                elif term_mode and (ext := self._external(name)):
+                    continue
+                canonical = self._canonical(name)
+                if top and (canonical in by_steps or not any(canonical == t or canonical.endswith("." + t) for t in term_tokens)):
+                    continue
+                if ext := self._external(name):
                     self._add_edge(decl_id, ext, USES)
+
+    def _canonical(self, name: str) -> str:
+        info = self.ex.constants.get(name)
+        return info.canonical if info else name
 
     def _closure(self, decl: str) -> set[tuple[str, str]]:
         """Declarations and library constants `decl` uses, looking through its Lean-generated

@@ -16,12 +16,15 @@ def split_goals(goals: str) -> list[str]:
     return [g for g in goals.split("\n\n") if g.strip()]
 
 
+def case_tags(goals: str) -> list[str]:
+    """The case tag of every goal, in order ("" for a goal without one)."""
+    return [g.split("\n", 1)[0][len("case ") :].strip() if g.startswith("case ") else "" for g in split_goals(goals)]
+
+
 def case_tag(goals: str) -> str:
     """The case tag of the first goal (`succ` for `case succ`), or "" if it has none."""
-    parts = split_goals(goals)
-    if parts and parts[0].startswith("case "):
-        return parts[0].split("\n", 1)[0][len("case ") :].strip()
-    return ""
+    tags = case_tags(goals)
+    return tags[0] if tags else ""
 
 
 def continues(earlier_tag: str, later_tag: str) -> bool:
