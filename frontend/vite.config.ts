@@ -3,6 +3,10 @@ import adapter from '@sveltejs/adapter-auto';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
+// Backend the dev server proxies `/api` to. Override with API_PROXY_TARGET if
+// the FastAPI app isn't running on the default host/port.
+const API_PROXY_TARGET = process.env.API_PROXY_TARGET ?? 'http://localhost:8000';
+
 export default defineConfig({
 	plugins: [
 		tailwindcss(),
@@ -18,5 +22,15 @@ export default defineConfig({
 			// See https://svelte.dev/docs/kit/adapters for more information about adapters.
 			adapter: adapter()
 		})
-	]
+	],
+	server: {
+		proxy: {
+			// Same-origin `/api` calls so the guest session cookie works without
+			// CORS/SameSite issues, and SSE streaming passes straight through.
+			'/api': {
+				target: API_PROXY_TARGET,
+				changeOrigin: true
+			}
+		}
+	}
 });

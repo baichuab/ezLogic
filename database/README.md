@@ -20,15 +20,25 @@ Postgres stores each chat turn and the Lean code produced for it. The cache is a
 }
 ```
 
+The response is `text/event-stream`: a series of `data: {json}\n\n` lines forwarding
+`ProofAgent.stream` events (`token`, `tool_call_start`, `tool_result`), ending in one `done`
+event (or `error` on failure):
+
 ```json
 {
+  "type": "done",
+  "cached": false,
   "query_id": "...",
   "response": "theorem n_add_zero (n : Nat) : n + 0 = n := by\n  simp",
-  "cached": false
+  "reply": "This proves n + 0 = n by simp, which unfolds the definition of addition...",
+  "finished": true,
+  "tool_calls": [ ... ]
 }
 ```
 
-`response` is the Lean source the UI shows.
+`response` is the Lean source the UI shows. `reply` is the agent's prose explanation for this
+turn; it is not stored, so it is not available on a cache hit or in `GET /api/history`
+(`"reply": "response"` on a cache hit, the Lean source again).
 
 ### `GET /api/history?chat_id=<uuid>`
 

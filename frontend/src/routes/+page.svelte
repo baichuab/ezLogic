@@ -201,7 +201,7 @@
 			{#if isMockMode}
 				<span
 					class="ml-auto rounded-full border border-line px-2.5 py-0.5 text-xs text-muted"
-					title="Set VITE_API_URL to connect to the backend agent">Demo data</span
+					title="Unset VITE_MOCK to connect to the backend agent">Demo data</span
 				>
 			{/if}
 		</header>

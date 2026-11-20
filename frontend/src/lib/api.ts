@@ -21,12 +21,15 @@ function normaliseStep(raw: Partial<ProofStep>, i: number): ProofStep {
 }
 
 /**
- * Backend base URL. Set `VITE_API_URL=http://localhost:8000` to talk to the
- * FastAPI agent; leave unset to use the built-in demo proof.
+ * Backend base URL. Requests go to `${API_URL}/api/...`. Defaults to '' (same
+ * origin), relying on the dev server's `/api` proxy (see vite.config.ts) or a
+ * reverse proxy in production. Set `VITE_API_URL` only to point at a backend
+ * on a different origin.
  */
-const API_URL: string | undefined = import.meta.env.VITE_API_URL;
+const API_URL: string = import.meta.env.VITE_API_URL ?? '';
 
-export const isMockMode = !API_URL;
+/** Set `VITE_MOCK=1` to use the built-in demo proof instead of the backend. */
+export const isMockMode = import.meta.env.VITE_MOCK === '1';
 
 export interface SendResult {
 	message: AssistantMessage;
