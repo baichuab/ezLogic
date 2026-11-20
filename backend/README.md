@@ -49,7 +49,7 @@ Tool calls are printed live as the agent runs them.
 | GET | `/api/history?chat_id=<uuid>` | Every stored turn for this guest and chat, oldest first |
 | GET | `/api/files` | List workspace files |
 | GET | `/api/files/{path}` | Read a workspace file |
-| POST | `/api/verify/file` | Compile a workspace file with the Lean CLI. Body: `{"path": str}` |
+| POST | `/api/verify/file` | Check a workspace file with the lean-interact REPL. Body: `{"path": str}` |
 | POST | `/api/verify/snippet` | Check a snippet with lean-interact. Body: `{"code": str}` |
 
 `POST /api/session` checks the `ezlogic_guest` cookie and reuses the guest ID if
@@ -70,6 +70,6 @@ secret, local sessions expire when the backend process restarts.
 - `agent/agent.py` - OpenRouter tool-calling loop and system prompt
 - `agent/tools.py` - Tool schemas and dispatcher
 - `agent/workspace.py` - Sandboxed file operations (paths cannot escape `WORKSPACE_DIR`)
-- `agent/lean.py` - Lean CLI file checks and lean-interact snippet checks
+- `agent/lean.py` - lean-interact REPL file and snippet checks
 - `workspace/` - The agent's local file system (git-ignored). Add a `lakefile` here to make it
   a Lake project (e.g. with Mathlib); files are then checked with `lake env lean`.

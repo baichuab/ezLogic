@@ -49,7 +49,8 @@ TOOL_SCHEMAS = [
     _fn("delete_file", "Delete a file.", {"path": _PATH}, ["path"]),
     _fn(
         "check_lean_file",
-        "Compile a .lean file in the workspace with the Lean CLI and return compiler output. "
+        "Check a .lean file in the workspace in the Lean REPL (Mathlib preloaded) and return Lean's messages. "
+        "Only Mathlib/Std/Lean/Batteries imports are supported. "
         "Use this to verify complete proofs. A proof is only verified if ok=true.",
         {"path": _PATH},
         ["path"],

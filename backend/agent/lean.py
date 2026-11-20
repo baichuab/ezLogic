@@ -1,10 +1,11 @@
 """Lean verification.
 
-Two modes:
-  * check_file    - runs the `lean` CLI (or `lake env lean` inside a Lake project)
-                    on a file in the workspace. Best for full proofs.
-  * check_snippet - sends a short code snippet to a Lean REPL via lean-interact.
-                    Best for quick experiments; the REPL is started lazily and reused.
+Everything runs in one lean-interact REPL, started lazily and reused, on top of an
+environment with Mathlib already imported:
+  * check_file    - reads a .lean file from the workspace and checks its contents.
+                    Best for full proofs. Only Mathlib/Std/Lean/Batteries imports are
+                    supported, since those are what the preloaded environment has.
+  * check_snippet - checks a short code snippet. Best for quick experiments.
 """
 
 import asyncio
@@ -39,49 +40,10 @@ LEAN_MISSING = (
 )
 
 
-async def check_file(workspace: Workspace, path: str) -> LeanResult:
-    target = workspace.resolve(path)
-    if not target.is_file():
-        return LeanResult(ok=False, error=f"No such file: {path}")
-
-    # Use Lake when the workspace is a Lake project so imports (e.g. Mathlib) resolve.
-    is_lake = any((workspace.root / f).exists() for f in ("lakefile.lean", "lakefile.toml"))
-    if is_lake:
-        if not shutil.which(Config.LAKE_PATH):
-            return LeanResult(ok=False, error=LEAN_MISSING)
-        cmd = [Config.LAKE_PATH, "env", Config.LEAN_PATH, workspace.rel(target)]
-    else:
-        if not shutil.which(Config.LEAN_PATH):
-            return LeanResult(ok=False, error=LEAN_MISSING)
-        cmd = [Config.LEAN_PATH, workspace.rel(target)]
-
-    log.info("check_lean_file start path=%s is_lake=%s", path, is_lake)
-    t0 = time.monotonic()
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=workspace.root,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=Config.LEAN_TIMEOUT)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()  # reap the killed process so it doesn't linger as a zombie
-        log.warning("check_lean_file timeout path=%s after %.1fs", path, time.monotonic() - t0)
-        return LeanResult(ok=False, error=f"Lean timed out after {Config.LEAN_TIMEOUT}s")
-
-    output = stdout.decode(errors="replace")
-    # `sorry` only produces a warning, but the proof is not complete.
-    ok = proc.returncode == 0 and "declaration uses 'sorry'" not in output
-    log.info("check_lean_file done path=%s ok=%s elapsed=%.1fs", path, ok, time.monotonic() - t0)
-    return LeanResult(ok=ok, output=output)
-
-
 # --- lean-interact REPL -----------------------------------------------------------
 #
 # The REPL process and the "Mathlib already imported" environment it builds are both
-# reused across every check_lean_snippet call (and across requests/users): building
+# reused across every Lean check (and across requests/users): building
 # them is slow -- starting the REPL and loading Mathlib the first time can take a
 # minute or more -- but once done, a snippet that reuses that environment typically
 # checks in well under a second instead of ~40s for a fresh `import Mathlib`.
@@ -98,12 +60,28 @@ def _is_lake_project() -> bool:
     return any((root / f).exists() for f in ("lakefile.lean", "lakefile.toml"))
 
 
+def _repl_source(lean_version: str | None) -> dict:
+    """`repl_git`/`repl_rev` kwargs for LeanREPLConfig.
+
+    The official leanprover-community/repl tags every Lean release with the bare
+    version (`v4.37.0-rc1`). lean-interact first tries `{rev}_lean-toolchain-{ver}`
+    (its fork's tag scheme), and when that doesn't exist falls back to checking
+    out `{rev}` itself -- so passing the version as the rev picks the right tag.
+    Returns {} (lean-interact's defaults) when there's no version to pin to.
+    """
+    rev = Config.LEAN_REPL_REV or lean_version
+    if not rev:
+        return {}
+    return {"repl_git": Config.LEAN_REPL_GIT, "repl_rev": rev}
+
+
 def _get_server():
     """Start (once) and return a lean-interact REPL server. Blocking."""
     global _server
     with _server_lock:
         if _server is None:
             from lean_interact import AutoLeanServer, LeanREPLConfig, LocalProject
+            from lean_interact.utils import get_project_lean_version
 
             root = Config.WORKSPACE_DIR
             if _is_lake_project():
@@ -114,12 +92,14 @@ def _get_server():
                     project=LocalProject(directory=str(root), lake_path=Config.LAKE_PATH),
                     cache_dir=Config.LEAN_INTERACT_CACHE,
                     lake_path=Config.LAKE_PATH,
+                    **_repl_source(get_project_lean_version(root)),
                 )
             else:
                 repl_config = LeanREPLConfig(
                     lean_version=Config.LEAN_VERSION,
                     cache_dir=Config.LEAN_INTERACT_CACHE,
                     lake_path=Config.LAKE_PATH,
+                    **_repl_source(Config.LEAN_VERSION),
                 )
             log.info("starting lean-interact REPL (first use; building/downloading can take a while)")
             t0 = time.monotonic()
@@ -173,7 +153,29 @@ def _without_imports(code: str) -> str:
     return _IMPORT_LINE.sub("", code)
 
 
-def _check_snippet_sync(code: str) -> LeanResult:
+# Modules `import Mathlib` already brings into the preloaded REPL environment.
+_SUPPORTED_IMPORT_ROOTS = ("Mathlib", "Std", "Lean", "Batteries", "Init")
+_IMPORT_NAMES = re.compile(r"^[ \t]*import\s+(.+)$", re.MULTILINE)
+_BLOCK_COMMENT = re.compile(r"/-.*?-/", re.DOTALL)
+_LINE_COMMENT = re.compile(r"--.*$", re.MULTILINE)
+
+
+def _unsupported_imports(code: str) -> list[str]:
+    """Imported modules the preloaded environment doesn't provide (anything outside
+    Mathlib/Std/Lean/Batteries/Init), in order of appearance, without duplicates.
+    Imports inside comments are ignored."""
+    stripped = _LINE_COMMENT.sub("", _BLOCK_COMMENT.sub("", code))
+    found: list[str] = []
+    for match in _IMPORT_NAMES.finditer(stripped):
+        for module in match.group(1).split():
+            if module.split(".")[0] not in _SUPPORTED_IMPORT_ROOTS and module not in found:
+                found.append(module)
+    return found
+
+
+def _run_in_repl(code: str, label: str) -> LeanResult:
+    """Check `code` in the shared REPL on top of the Mathlib environment. Blocking.
+    `label` names the caller in logs (`check_lean_snippet`, `check_lean_file path=...`)."""
     from lean_interact import Command
     from lean_interact.interface import LeanError
 
@@ -189,11 +191,11 @@ def _check_snippet_sync(code: str) -> LeanResult:
         response = server.run(Command(cmd=body, env=base_env), timeout=Config.LEAN_TIMEOUT)
         run_elapsed = time.monotonic() - t_run
     except Exception as e:  # REPL build/startup failures, timeouts, ...
-        log.warning("check_lean_snippet failed after %.1fs: %s: %s", time.monotonic() - t0, type(e).__name__, e)
+        log.warning("%s failed after %.1fs: %s: %s", label, time.monotonic() - t0, type(e).__name__, e)
         return LeanResult(ok=False, error=f"{type(e).__name__}: {e}")
 
     if isinstance(response, LeanError):
-        log.info("check_lean_snippet rejected after %.1fs: %s", time.monotonic() - t0, response.message)
+        log.info("%s rejected after %.1fs: %s", label, time.monotonic() - t0, response.message)
         return LeanResult(ok=False, error=response.message)
 
     messages = [
@@ -225,27 +227,49 @@ def _check_snippet_sync(code: str) -> LeanResult:
         # and had to replay the cached environment from scratch -- i.e. re-import
         # Mathlib -- before it could run this snippet.
         log.warning(
-            "check_lean_snippet's own Lean call took %.1fs despite reusing a loaded "
+            "%s: Lean call took %.1fs despite reusing a loaded "
             "environment; the Lean REPL likely restarted under memory pressure and "
             "replayed Mathlib from scratch (see LEAN_MAX_TOTAL_MEMORY in backend/.env.example)",
+            label,
             run_elapsed,
         )
-    log.info("check_lean_snippet done ok=%s elapsed=%.1fs", ok, time.monotonic() - t0)
+    log.info("%s done ok=%s elapsed=%.1fs", label, ok, time.monotonic() - t0)
     return LeanResult(ok=ok, messages=messages)
 
 
-async def check_snippet(code: str) -> LeanResult:
+async def _check(code: str, label: str) -> LeanResult:
     try:
-        # The inner lean-interact `timeout=` (LEAN_TIMEOUT, in _check_snippet_sync)
-        # covers the normal per-snippet case once the REPL is warm. This outer bound
-        # is just a safety net for the rare case of the REPL/Mathlib build itself
-        # hanging, which isn't covered by that inner timeout.
+        # The inner lean-interact `timeout=` (LEAN_TIMEOUT, in _run_in_repl) covers
+        # the normal per-check case once the REPL is warm. This outer bound is just a
+        # safety net for the rare case of the REPL/Mathlib build itself hanging,
+        # which isn't covered by that inner timeout.
         return await asyncio.wait_for(
-            asyncio.to_thread(_check_snippet_sync, code), timeout=Config.LEAN_STARTUP_TIMEOUT
+            asyncio.to_thread(_run_in_repl, code, label), timeout=Config.LEAN_STARTUP_TIMEOUT
         )
     except asyncio.TimeoutError:
-        log.warning("check_lean_snippet exceeded the %.0fs safety timeout", Config.LEAN_STARTUP_TIMEOUT)
-        return LeanResult(ok=False, error=f"Lean snippet check timed out after {Config.LEAN_STARTUP_TIMEOUT:.0f}s")
+        log.warning("%s exceeded the %.0fs safety timeout", label, Config.LEAN_STARTUP_TIMEOUT)
+        return LeanResult(ok=False, error=f"Lean check timed out after {Config.LEAN_STARTUP_TIMEOUT:.0f}s")
+
+
+async def check_snippet(code: str) -> LeanResult:
+    return await _check(code, "check_lean_snippet")
+
+
+async def check_file(workspace: Workspace, path: str) -> LeanResult:
+    """Check a workspace .lean file's contents in the REPL."""
+    target = workspace.resolve(path)
+    if not target.is_file():
+        return LeanResult(ok=False, error=f"No such file: {path}")
+    code = target.read_text(encoding="utf-8", errors="replace")
+    if unsupported := _unsupported_imports(code):
+        return LeanResult(
+            ok=False,
+            error=(
+                "check_lean_file only supports imports from Mathlib, Std, Lean and "
+                f"Batteries (already loaded); found: {', '.join(unsupported)}"
+            ),
+        )
+    return await _check(code, f"check_lean_file path={path}")
 
 
 async def warm_up() -> None:
@@ -253,7 +277,7 @@ async def warm_up() -> None:
     request, instead of making whoever sends the first message pay for it. Safe to
     call even when Lean/Lake aren't installed, or the workspace isn't a Lake
     project -- it just does nothing in those cases. Failures aren't fatal: the next
-    check_lean_snippet call will simply try again (and report any error normally)."""
+    Lean check will simply try again (and report any error normally)."""
     if not shutil.which(Config.LAKE_PATH):
         return
     await asyncio.to_thread(lambda: _get_base_env(_get_server()))

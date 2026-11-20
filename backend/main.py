@@ -288,7 +288,7 @@ async def verify_snippet(request: SnippetRequest):
 
 @app.post("/api/verify/file")
 async def verify_file(request: FileRequest):
-    """Compile a workspace file with the Lean CLI."""
+    """Check a workspace file with the lean-interact REPL."""
     try:
         return (await lean.check_file(workspace, request.path)).to_dict()
     except WorkspaceError as e:

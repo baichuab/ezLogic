@@ -48,3 +48,27 @@ def test_does_not_touch_import_appearing_mid_identifier_or_string():
     # treated as an import statement.
     code = 'example : "this imports nothing" = "this imports nothing" := rfl'
     assert _without_imports(code) == code
+
+
+# --- _unsupported_imports ----------------------------------------------------------
+
+from agent.lean import _unsupported_imports
+
+
+def test_mathlib_and_core_imports_are_supported():
+    code = "import Mathlib\nimport Mathlib.Data.Real.Sqrt\nimport Std\nimport Lean.Elab\nimport Batteries.Data.List"
+    assert _unsupported_imports(code) == []
+
+
+def test_local_and_unknown_imports_are_reported_once_in_order():
+    code = "import Mathlib\nimport Ezlogic.Basic\nimport Foo Ezlogic.Basic\n"
+    assert _unsupported_imports(code) == ["Ezlogic.Basic", "Foo"]
+
+
+def test_imports_inside_comments_are_ignored():
+    code = "/-\nimport Ezlogic.Basic\n-/\n-- import Foo\nimport Mathlib"
+    assert _unsupported_imports(code) == []
+
+
+def test_name_merely_starting_with_a_supported_root_is_rejected():
+    assert _unsupported_imports("import MathlibExtras") == ["MathlibExtras"]

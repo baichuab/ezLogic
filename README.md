@@ -29,10 +29,10 @@ curl https://elan.lean-lang.org/elan-init.sh -sSf | sh
 lean --version && lake --version
 ```
 
-The backend uses the `lean` CLI to compile proof files, and the
+The backend checks both proof files and short snippets in a Lean REPL through the
 [`lean-interact`](https://github.com/augustepoiroux/LeanInteract) Python package (installed from
-`requirements.txt`) to check short snippets in a Lean REPL. The first snippet check downloads and
-builds the REPL, so it takes a while.
+`requirements.txt`), with Mathlib preloaded from the Lake project in `backend/workspace/`. The
+first start downloads and builds the REPL, so it takes a while.
 
 ### Installation
 
@@ -115,7 +115,7 @@ sandboxed workspace directory (`WORKSPACE_DIR`, default `backend/workspace/`):
 | `write_file` | Create or overwrite a file |
 | `edit_file` | Replace a unique string in a file |
 | `delete_file` | Delete a file |
-| `check_lean_file` | Compile a `.lean` file with the Lean CLI (`lake env lean` inside a Lake project) |
+| `check_lean_file` | Check a `.lean` file in the Lean REPL via `lean-interact` (Mathlib preloaded; Mathlib/Std/Lean/Batteries imports only) |
 | `check_lean_snippet` | Check a short snippet in a Lean REPL via `lean-interact` |
 
 ## Workflow
