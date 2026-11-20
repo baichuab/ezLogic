@@ -1,16 +1,17 @@
 <script lang="ts">
 	let {
 		busy = false,
+		allowEmpty = false,
 		onsend,
 		placeholder = 'Type a theorem, proof sketch or question…'
-	}: { busy?: boolean; onsend: (text: string) => void; placeholder?: string } = $props();
+	}: { busy?: boolean; allowEmpty?: boolean; onsend: (text: string) => void; placeholder?: string } = $props();
 
 	let text = $state('');
 	let el: HTMLTextAreaElement | undefined = $state();
 
 	function submit() {
 		const t = text.trim();
-		if (!t || busy) return;
+		if ((!t && !allowEmpty) || busy) return;
 		onsend(t);
 		text = '';
 		queueMicrotask(resize);
@@ -49,7 +50,7 @@
 	></textarea>
 	<button
 		type="submit"
-		disabled={busy || !text.trim()}
+		disabled={busy || (!text.trim() && !allowEmpty)}
 		class="grid size-9 shrink-0 place-items-center rounded-full bg-ink text-paper transition hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-25"
 		aria-label="Send"
 	>

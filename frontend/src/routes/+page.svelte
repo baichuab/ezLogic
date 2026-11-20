@@ -3,9 +3,11 @@
 	import { fade, fly } from 'svelte/transition';
 	import { isMockMode, sendMessage } from '#lib/api.js';
 	import { demoChats } from '#lib/mock.js';
+	import { composePrompt, extractProofText, FileError } from '#lib/extract.js';
 	import type { AssistantMessage, Chat } from '#lib/types.js';
 	import Brace from '#lib/components/Brace.svelte';
 	import Composer from '#lib/components/Composer.svelte';
+	import FileDrop from '#lib/components/FileDrop.svelte';
 	import ProofSteps from '#lib/components/ProofSteps.svelte';
 	import Sidebar from '#lib/components/Sidebar.svelte';
 	import StepDetail from '#lib/components/StepDetail.svelte';
@@ -18,7 +20,15 @@
 	let sidebarPinned = $state(true);
 	let drawerOpen = $state(false);
 	let busy = $state(false);
-	let error = $state<{ text: string; message: string } | null>(null);
+	let error = $state<{ text: string; prompt: string; attachment?: Attachment; message: string } | null>(null);
+
+	type Attachment = { name: string; size: number };
+
+	// Proof file chosen for a new chat; its text is extracted as soon as it is picked.
+	let file = $state<File | null>(null);
+	let fileError = $state('');
+	let fileText = $state<string | null>(null);
+	let reading = $state(false);
 
 	const active = $derived(chats.find((c) => c.id === activeId) ?? null);
 	const selectedMessage = $derived(
@@ -58,19 +68,58 @@
 	}
 
 	function newChat() {
+		file = null;
+		fileError = '';
 		activeId = null;
 		selection = null;
 		drawerOpen = false;
 		error = null;
 	}
 
-	async function send(text: string) {
+	$effect(() => {
+		const f = file;
+		fileText = null;
+		if (!f) {
+			reading = false;
+			return;
+		}
+		let stale = false;
+		reading = true;
+		extractProofText(f)
+			.then((t) => {
+				if (!stale) fileText = t;
+			})
+			.catch((e) => {
+				if (stale) return;
+				fileError = e instanceof FileError ? e.message : String(e);
+				file = null;
+			})
+			.finally(() => {
+				if (!stale) reading = false;
+			});
+		return () => {
+			stale = true;
+		};
+	});
+
+	function submit(text: string) {
+		if (file && fileText !== null) {
+			const attachment = { name: file.name, size: file.size };
+			const prompt = composePrompt(text, file.name, fileText);
+			file = null;
+			return send(text, prompt, attachment);
+		}
+		return send(text);
+	}
+
+	async function send(text: string, prompt = text, attachment?: Attachment) {
 		error = null;
 		let chat = active;
 		if (!chat) {
+			const title = text || attachment?.name || 'New proof';
 			chat = {
 				id: `c-${Date.now().toString(36)}`,
-				title: text.length > 48 ? text.slice(0, 47) + '…' : text,
+				title: title.length > 48 ? title.slice(0, 47) + '…' : title,
 				messages: [],
 				history: [],
 				updatedAt: Date.now()
@@ -79,18 +128,18 @@
 			activeId = chat.id;
 			chat = chats[0];
 		}
-		chat.messages.push({ id: `u-${Date.now().toString(36)}`, role: 'user', text });
+		chat.messages.push({ id: `u-${Date.now().toString(36)}`, role: 'user', text, attachment });
 		scrollToBottom();
 
 		busy = true;
 		try {
-			const res = await sendMessage(text, chat.history);
+			const res = await sendMessage(prompt, chat.history);
 			chat.messages.push(res.message);
 			chat.history = res.history;
 			chat.updatedAt = Date.now();
 			scrollToBottom();
 		} catch (e) {
-			error = { text, message: e instanceof Error ? e.message : String(e) };
+			error = { text, prompt, attachment, message: e instanceof Error ? e.message : String(e) };
 		} finally {
 			busy = false;
 		}
@@ -98,10 +147,10 @@
 
 	function retry() {
 		if (!error || !active) return;
-		const { text } = error;
+		const { text, prompt, attachment } = error;
 		const lastMsg = active.messages.at(-1);
 		if (lastMsg?.role === 'user' && lastMsg.text === text) active.messages.pop();
-		send(text);
+		send(text, prompt, attachment);
 	}
 
 	// ---- scrolling & brace geometry -----------------------------------------
@@ -223,7 +272,7 @@
 							<p class="font-serif text-4xl text-ink" aria-hidden="true">∀ ∃ ⊢</p>
 							<h2 class="mt-4 text-2xl font-semibold tracking-tight">What would you like to prove?</h2>
 							<p class="mt-2 max-w-md text-sm text-ink-2">
-								Describe a theorem or paste a proof sketch. ezLogic formalises it in Lean, checks it,
+								Describe a theorem, paste a proof sketch, or upload a .tex or .pdf proof. ezLogic formalises it in Lean, checks it,
 								and explains each step.
 							</p>
 							<div class="mt-6 flex flex-wrap justify-center gap-2">
@@ -247,6 +296,14 @@
 										<p
 											class="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink"
 										>
+											{#if msg.attachment}
+												<span class="mb-1.5 flex items-center gap-1.5 rounded-lg bg-surface px-2.5 py-1 text-xs text-ink-2">
+													<svg viewBox="0 0 20 20" class="size-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6">
+														<path d="M5 2.5h6.5L15 6v11.5H5z M11.5 2.5V6H15" stroke-linejoin="round" />
+													</svg>
+													<span class="truncate">{msg.attachment.name}</span>
+												</span>
+											{/if}
 											{msg.text}
 										</p>
 									</div>
@@ -311,7 +368,19 @@
 		<!-- Composer: present in every state -->
 		<div class="shrink-0 px-4 pb-4 pt-2">
 			<div class="mx-auto max-w-3xl">
-				<Composer {busy} onsend={send} />
+				{#if !active || active.messages.length === 0}
+					<div class="mb-2">
+						<FileDrop bind:file bind:error={fileError} disabled={busy} />
+						{#if reading}
+							<p class="mt-1.5 px-2 text-xs text-muted">Reading file…</p>
+						{/if}
+					</div>
+				{/if}
+				<Composer
+					busy={busy || reading}
+					allowEmpty={!!file && fileText !== null}
+					onsend={submit}
+				/>
 				<p class="mt-2 text-center text-[11px] text-muted">
 					Proofs are checked by Lean 4. Explanations are AI-generated.
 				</p>

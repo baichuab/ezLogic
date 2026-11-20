@@ -32,6 +32,10 @@ For example, to add Tailwind CSS:
 npx sv add tailwindcss
 ```
 
+## Proof file upload
+
+On a new chat, a file field above the message box accepts a `.tex` or `.pdf` proof (up to 1 GB), optionally with typed instructions. The text is extracted in the browser (`src/lib/extract.ts`; PDFs via `pdfjs-dist`) and sent to `/api/chat` as part of `text`, so the backend is unchanged. `.tex` gives better results than `.pdf`, which loses math layout.
+
 ## Developing
 
 Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
