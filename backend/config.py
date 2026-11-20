@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from secrets import token_urlsafe
 
 from dotenv import load_dotenv
 
@@ -42,6 +43,9 @@ class Config:
     LEAN_INTERACT_CACHE = _path("LEAN_INTERACT_CACHE", "./.lean_cache")
 
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
+    GUEST_JWT_SECRET = os.getenv("GUEST_JWT_SECRET") or token_urlsafe(32)
+    GUEST_COOKIE_SECURE = os.getenv("GUEST_COOKIE_SECURE", "false").lower() == "true"
 
 
 Config.WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
