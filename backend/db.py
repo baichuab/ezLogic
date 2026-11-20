@@ -45,28 +45,6 @@ async def init_db() -> None:
                 await cur.execute(statement)
 
 
-async def latest_messages(user_token: str, chat_id: str) -> list:
-    """Newest agent messages for this chat, or []."""
-    # chat() passes this list to agent.run as history. A new chat has no row.
-    async with await _connect() as conn:
-        cur = await conn.execute(
-            """
-            select q.messages
-            from chat_turns t
-            join queries q on q.query_id = t.query_id
-            where t.user_token = %s and t.chat_id = %s
-            order by t.created_at desc
-            limit 1
-            """,
-            (user_token, chat_id),
-        )
-        row = await cur.fetchone()
-    if row is None:
-        return []
-    # messages is jsonb: the full agent transcript for that one turn.
-    return row["messages"]
-
-
 async def find_response(
     user_token: str, chat_id: str, model: str, query: str
 ) -> dict[str, str] | None:

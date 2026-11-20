@@ -34,13 +34,29 @@ attempt at the proof clearly marked as unverified."""
 @dataclass
 class AgentResult:
     reply: str
-    messages: list[
-        dict
-    ]  # full conversation (without system prompt), to send back next turn
+    messages: list[dict]  # this turn's transcript only (user message onwards)
     tool_calls: list[dict] = field(
         default_factory=list
     )  # trace of tool calls this turn
     finished: bool = True  # False if max steps reached
+
+
+def turns_to_messages(turns: list[dict]) -> list[dict]:
+    """Convert stored turns (rows from db.list_history) into chat messages.
+
+    Each turn needs `query` and `response`; `response` is the Lean source kept
+    for that turn. Other keys (query_id, model, created_at) are ignored.
+    """
+    messages: list[dict] = []
+    for turn in turns:
+        messages.append({"role": "user", "content": turn["query"]})
+        messages.append(
+            {
+                "role": "assistant",
+                "content": f"Lean code for this request:\n```lean\n{turn['response']}\n```",
+            }
+        )
+    return messages
 
 
 class ProofAgent:
@@ -63,14 +79,20 @@ class ProofAgent:
         history: list[dict] | None = None,
         on_tool_call: Callable[[dict], None] | None = None,
     ) -> AgentResult:
-        """Run one user turn. `on_tool_call` is called after each tool executes (for live logging)."""
-        messages = list(history or []) + [{"role": "user", "content": user_message}]
+        """Run one user turn.
+
+        `history` is the list of prior turns as returned by `db.list_history`
+        (oldest first, each with `query` and `response`). `on_tool_call` is
+        called after each tool executes (for live logging).
+        """
+        prior = [{"role": "system", "content": SYSTEM_PROMPT}, *turns_to_messages(history or [])]
+        messages: list[dict] = [{"role": "user", "content": user_message}]
         trace: list[dict] = []
 
         for _ in range(Config.AGENT_MAX_STEPS):
             completion = await self.client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages],
+                messages=[*prior, *messages],
                 tools=TOOL_SCHEMAS,
             )
             msg = completion.choices[0].message
@@ -160,9 +182,10 @@ async def main(argv: list[str] | None = None) -> None:
     print(f"ezLogic agent | model: {agent.model} | workspace: {workspace.root}")
 
     async def turn(prompt: str, history: list[dict]) -> list[dict]:
+        # history uses the same turn shape as db.list_history.
         result = await agent.run(prompt, history, on_tool_call=_print_tool_call)
         print(f"\n\033[1magent>\033[0m {result.reply}\n")
-        return result.messages
+        return [*history, {"query": prompt, "response": result.reply}]
 
     if args.prompt:
         await turn(" ".join(args.prompt), [])
