@@ -30,11 +30,23 @@ Tool calls are printed live as the agent runs them.
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/health` | Health check |
+| POST | `/api/session` | Validate or issue the guest cookie. Returns `204 No Content` |
 | POST | `/api/chat` | Run the agent for one turn. Body: `{"message": str, "history": [...], "model": str?}`. Returns `reply`, `messages` (send back as `history` next turn), `tool_calls` trace, `finished` |
 | GET | `/api/files` | List workspace files |
 | GET | `/api/files/{path}` | Read a workspace file |
 | POST | `/api/verify/file` | Compile a workspace file with the Lean CLI. Body: `{"path": str}` |
 | POST | `/api/verify/snippet` | Check a snippet with lean-interact. Body: `{"code": str}` |
+
+`POST /api/session` checks the `ezlogic_guest` cookie and reuses the guest ID if
+the JWT is valid. If the cookie is missing or invalid, FastAPI sets a new
+`HttpOnly` cookie with a signed JWT that lasts 24 hours. `POST /api/chat` also
+checks the guest cookie and can start a session on its own. Browser clients
+calling the API from a different port on the same hostname should use
+`credentials: "include"` with `fetch`.
+
+For HTTPS deployments, set `GUEST_COOKIE_SECURE=true` and set `GUEST_JWT_SECRET`
+to a persistent random secret shared by all backend workers. Without a configured
+secret, local sessions expire when the backend process restarts.
 
 ## Project Structure
 

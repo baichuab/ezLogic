@@ -1,10 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent import ProofAgent, Workspace, WorkspaceError
 from agent import lean
 from config import Config
+from guest_session import ensure_guest_session
 
 app = FastAPI(
     title=Config.API_TITLE,
@@ -49,7 +50,21 @@ async def health_check():
     return {"status": "healthy", "service": "ezLogic Backend"}
 
 
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post(
+    "/api/session",
+    status_code=204,
+    response_class=Response,
+    dependencies=[Depends(ensure_guest_session)],
+)
+async def start_guest_session() -> None:
+    """Validate or issue the guest session cookie."""
+
+
+@app.post(
+    "/api/chat",
+    response_model=ChatResponse,
+    dependencies=[Depends(ensure_guest_session)],
+)
 async def chat(request: ChatRequest):
     """Run the proof agent for one user turn."""
     try:

@@ -2,6 +2,7 @@ fastapi[standard]>=0.115
 uvicorn>=0.30
 pydantic>=2.9
 python-dotenv>=1.0
+PyJWT>=2.10,<3
 # OpenAI-compatible client, pointed at OpenRouter's base URL
 openai>=1.50
 # Python interface to the Lean 4 REPL (used for quick snippet checks)
