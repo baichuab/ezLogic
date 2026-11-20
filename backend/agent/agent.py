@@ -34,15 +34,21 @@ attempt at the proof clearly marked as unverified."""
 @dataclass
 class AgentResult:
     reply: str
-    messages: list[dict]  # full conversation (without system prompt), to send back next turn
-    tool_calls: list[dict] = field(default_factory=list)  # trace of tool calls this turn
+    messages: list[
+        dict
+    ]  # full conversation (without system prompt), to send back next turn
+    tool_calls: list[dict] = field(
+        default_factory=list
+    )  # trace of tool calls this turn
     finished: bool = True  # False if max steps reached
 
 
 class ProofAgent:
     def __init__(self, workspace: Workspace, model: str | None = None):
         if not Config.OPENROUTER_API_KEY:
-            raise RuntimeError("OPENROUTER_API_KEY is not set (see backend/.env.example)")
+            raise RuntimeError(
+                "OPENROUTER_API_KEY is not set (see backend/.env.example)"
+            )
         self.workspace = workspace
         self.model = model or Config.OPENROUTER_MODEL
         self.client = AsyncOpenAI(
@@ -75,14 +81,19 @@ class ProofAgent:
                     {
                         "id": tc.id,
                         "type": "function",
-                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
                     }
                     for tc in msg.tool_calls
                 ]
             messages.append(assistant)
 
             if not msg.tool_calls:
-                return AgentResult(reply=msg.content or "", messages=messages, tool_calls=trace)
+                return AgentResult(
+                    reply=msg.content or "", messages=messages, tool_calls=trace
+                )
 
             for tc in msg.tool_calls:
                 try:
@@ -95,7 +106,11 @@ class ProofAgent:
                 if on_tool_call:
                     on_tool_call(call)
                 messages.append(
-                    {"role": "tool", "tool_call_id": tc.id, "content": serialize_result(result)}
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": serialize_result(result),
+                    }
                 )
 
         return AgentResult(
@@ -128,8 +143,12 @@ async def main(argv: list[str] | None = None) -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Chat with the ezLogic proof agent.")
-    parser.add_argument("prompt", nargs="*", help="Single prompt to run (omit for interactive mode)")
-    parser.add_argument("--model", help=f"OpenRouter model (default: {Config.OPENROUTER_MODEL})")
+    parser.add_argument(
+        "prompt", nargs="*", help="Single prompt to run (omit for interactive mode)"
+    )
+    parser.add_argument(
+        "--model", help=f"OpenRouter model (default: {Config.OPENROUTER_MODEL})"
+    )
     args = parser.parse_args(argv)
 
     workspace = Workspace(Config.WORKSPACE_DIR)
