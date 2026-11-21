@@ -251,8 +251,8 @@ describe('UTF-8 decoding across chunk boundaries', () => {
 
 describe('describeErrorBody', () => {
 	it('uses a string detail (e.g. a 503)', () => {
-		expect(describeErrorBody({ detail: 'OPENROUTER_API_KEY is not set' }, 503)).toBe(
-			'OPENROUTER_API_KEY is not set'
+		expect(describeErrorBody({ detail: 'ANTHROPIC_API_KEY is not set' }, 503)).toBe(
+			'ANTHROPIC_API_KEY is not set'
 		);
 	});
 
@@ -377,13 +377,13 @@ describe('streamChat', () => {
 	});
 
 	it('a 503 with a string detail becomes an http ApiError with that text', async () => {
-		mockChatFetch(() => jsonResponse({ detail: 'OPENROUTER_API_KEY is not set' }, 503));
+		mockChatFetch(() => jsonResponse({ detail: 'ANTHROPIC_API_KEY is not set' }, 503));
 
 		const err = await collect(streamChat('c1', 'x')).catch((e) => e);
 		expect(err).toBeInstanceOf(ApiError);
 		expect(err.kind).toBe('http');
 		expect(err.status).toBe(503);
-		expect(err.message).toBe('OPENROUTER_API_KEY is not set');
+		expect(err.message).toBe('ANTHROPIC_API_KEY is not set');
 	});
 
 	it('a 422 with an array detail is flattened into readable text', async () => {
