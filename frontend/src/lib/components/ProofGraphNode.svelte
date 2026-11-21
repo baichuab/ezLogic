@@ -6,7 +6,7 @@
 </script>
 
 <Handle type="target" position={Position.Top} isConnectable={false} />
-<div class="flex h-full w-full flex-col justify-center rounded-xl border-2 px-4 py-2 shadow-sm
+<div class="flex h-full w-full cursor-grab flex-col justify-center rounded-xl border-2 px-4 py-2 shadow-sm active:cursor-grabbing
 	{selected ? 'border-accent bg-accent-soft' : data.related ? 'border-accent bg-surface' : 'border-line-strong bg-surface'}">
 	<p class="text-[10px] font-semibold uppercase tracking-wider text-muted">{data.root ? 'Root theorem' : data.node.kind === 'theorem' ? 'Theorem or lemma' : 'Declaration'}</p>
 	<p class="truncate font-mono text-sm text-ink" title={nodeLabel(data.node)}>{nodeLabel(data.node)}</p>

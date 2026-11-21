@@ -3,6 +3,7 @@
 	import { getProofGraph, isMockMode } from '#lib/api.js';
 	import { createGraphLoader, type GraphState } from '#lib/graph-loader.js';
 	import { nodeLabel, theoremView, visibleGraph } from '#lib/graph.js';
+	import { loadPositions, positionsKey, savePositions, type Positions } from '#lib/graph-positions.js';
 	import GraphCanvas from './ProofGraph.svelte';
 	import NodeDetail from './ProofGraphNodeDetail.svelte';
 	let { queryId, onclose }: { queryId?: string | null; onclose: () => void } = $props();
@@ -11,11 +12,15 @@
 	let selectedId = $state<string | null>(null);
 	let technical = $state(false);
 	let expanded = $state.raw(new Set<string>());
+	// Hand-moved node positions for the current proof and view (see graph-positions.ts).
+	let positions = $state.raw<Positions>({});
+	let layoutVersion = $state(0); // bumped by Reset layout to remount the canvas
 	let closeButton: HTMLButtonElement;
 	const loader = createGraphLoader(getProofGraph, (next) => {
 		loadState = next;
 		if (next.kind === 'ready') {
 			technical = false;
+			positions = loadPositions(positionsKey(next.graph.query_id, false));
 			reset(next.graph.root_node_id);
 		}
 	});
@@ -37,6 +42,20 @@
 		if (next.has(id)) next.delete(id);
 		else next.add(id);
 		expanded = next;
+	}
+	function setTechnical(on: boolean, graph: { query_id: string; root_node_id: string }) {
+		technical = on;
+		positions = loadPositions(positionsKey(graph.query_id, on));
+		reset(graph.root_node_id);
+	}
+	function moved(next: Positions) {
+		positions = next;
+		if (saved) savePositions(positionsKey(saved.query_id, technical), next);
+	}
+	function resetLayout() {
+		positions = {};
+		if (saved) savePositions(positionsKey(saved.query_id, technical), {});
+		layoutVersion++;
 	}
 	function select(id: string) {
 		if (!visibleIds.has(id) && selectedId) expanded = new Set([...expanded, selectedId]);
@@ -65,7 +84,7 @@
 			</div>
 		{:else if saved}
 			<div class="flex flex-wrap items-center gap-3 border-b border-line px-5 py-3 text-xs">
-				<button type="button" aria-pressed={technical} class="rounded-md border border-line px-2 py-1 text-accent aria-pressed:bg-accent-soft" onclick={() => { technical = !technical; reset(saved.root_node_id); }}>
+				<button type="button" aria-pressed={technical} class="rounded-md border border-line px-2 py-1 text-accent aria-pressed:bg-accent-soft" onclick={() => setTechnical(!technical, saved)}>
 					Technical details
 				</button>
 				{#if visible}
@@ -78,12 +97,16 @@
 					{#if expanded.size > 1}
 						<button type="button" class="text-accent underline" onclick={() => reset(saved.root_node_id)}>Reset view</button>
 					{/if}
+					{#if Object.keys(positions).length}
+						<button type="button" class="text-accent underline" onclick={resetLayout}>Reset layout</button>
+					{/if}
 				{/if}
 			</div>
+			<p class="border-b border-line px-5 py-2 text-[11px] text-muted">Drag a node to move it · drag the background to pan · Shift-drag to select several</p>
 			{#if graph && visible}
 				{#if mounted}
-					{#key JSON.stringify([graph.query_id, technical, ...expanded])}
-						<GraphCanvas graph={visible} {selectedId} onselect={select} />
+					{#key JSON.stringify([graph.query_id, technical, layoutVersion, ...expanded])}
+						<GraphCanvas graph={visible} {selectedId} onselect={select} {positions} onmove={moved} />
 					{/key}
 				{/if}
 				<div class="border-t border-line px-5 py-3">
