@@ -36,7 +36,7 @@ These are estimates; check [Cloud Run pricing](https://cloud.google.com/run/pric
 | Cloud Run, kept warm | 2 vCPU, 8 GiB, 1 instance | $4.5–6 a day while running |
 | Cloud SQL | db-f1-micro, 10 GB | ~$0.30 a day |
 | Image storage | ~10 GB in Artifact Registry | ~$1 a month |
-| LLM (OpenRouter, Haiku 5.5) | ~1¢ per proof | a few dollars |
+| LLM (Anthropic API, Claude Haiku 5.5) | ~1¢ per proof | a few dollars |
 
 A new Google Cloud account's $300 trial credit (90 days) covers the Google part. After the
 pitch, run `deploy/cloudrun.sh pause`, or delete everything (see [Clean up](#clean-up)).
@@ -50,9 +50,14 @@ pitch, run `deploy/cloudrun.sh pause`, or delete everything (see [Clean up](#cle
    gcloud auth login
    gcloud config set project <PROJECT_ID>
    ```
-3. **The OpenRouter key:** the script takes `OPENROUTER_API_KEY` from the environment, else from
-   `backend/.env`, else asks for it. It is stored as an environment variable of the Cloud Run
-   service, so anyone with access to the project can see it.
+3. **The Anthropic API key:** the script takes `ANTHROPIC_API_KEY` from the environment, else from
+   `backend/.env`, else asks for it.
+   - **Where it ends up:** an environment variable of the Cloud Run service. The image never
+     contains `backend/.env`. Anyone with access to the project can see it.
+   - **What else is copied:** only the key. The service uses the backend's default endpoint
+     (`https://api.anthropic.com/v1/`) and `ANTHROPIC_MODEL` (default `claude-haiku-5-5`; override
+     when running the script). It does not use any `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` from
+     your local `.env`.
 
 ## Deploy
 ```bash
@@ -72,7 +77,8 @@ deploy/cloudrun.sh all        # = setup + build + deploy
   both.
 
   Settings on the service:
-  - `OPENROUTER_API_KEY` and `OPENROUTER_MODEL`;
+  - `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`. New revisions drop the old `OPENROUTER_*` settings;
+    the `demo-baseline-1` revision predates the switch and still uses OpenRouter;
   - `DATABASE_URL`, over the Cloud SQL socket;
   - `GUEST_JWT_SECRET` and `GUEST_COOKIE_SECURE=true`;
   - `FRONTEND_URL`;

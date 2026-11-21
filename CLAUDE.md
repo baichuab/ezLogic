@@ -18,7 +18,7 @@ lean-interact REPL (`backend/`). Storage: Postgres. See `README.md` and `backend
     and Mathlib).
 - Port 8000 may already have a developer's own backend on it. Check with `lsof -iTCP:8000`, and use
   another port (and `API_PROXY_TARGET`) rather than stopping someone else's process.
-- Real chat requests call OpenRouter with the key in `backend/.env` and cost money. Mock mode
+- Real chat requests call the Anthropic API with the key in `backend/.env` and cost money. Mock mode
   (`VITE_MOCK=1`) needs no backend.
 
 ## Hosted demo: Google Cloud Run (`deploy/`)
@@ -59,8 +59,12 @@ Everything goes through `deploy/cloudrun.sh`; details are in `deploy/README.md`.
   trial credit. A candidate adds a second instance while it's up. `pause` / `resume` around the
   pitch. Deploys and builds (~25 min, Cloud Build) are actions on the user's account, so confirm
   before running them.
-- **The OpenRouter key** is stored as an environment variable on the service (visible to project
-  members). The script reads it from `backend/.env`. Never print it or commit it.
+- **The Anthropic API key** (`ANTHROPIC_API_KEY`) is stored as an environment variable on the
+  service, visible to project members. The script reads it from `backend/.env`. Never print it or
+  commit it.
+  - Only the key is copied. The base URL and model come from the backend's defaults
+    (`api.anthropic.com/v1/`, `claude-haiku-5-5`).
+  - The `demo-baseline-1` revision predates the switch and still runs on OpenRouter.
 
 ## Repo conventions
 - Don't commit `.vscode/`, the stray `https:/` directory, `backend/.env`, or `backend/static/`.
