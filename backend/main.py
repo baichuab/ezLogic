@@ -4,13 +4,14 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from uuid import UUID
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agent import AgentResult, ExplainerAgent, ProofAgent, Workspace, WorkspaceError
@@ -411,9 +412,54 @@ async def _single(event: dict) -> AsyncIterator[str]:
     yield _sse(event)
 
 
+# A proof can go quiet for a while (the first Mathlib load, a long Lean check).
+# Proxies in front of a hosted backend may drop a stream that sends nothing, so
+# _stream sends an SSE comment after this many quiet seconds; the frontend's
+# createSSEParser ignores lines that aren't `data:`.
+KEEPALIVE_SECONDS = 15.0
+KEEPALIVE = ": ping\n\n"
+
+
+async def _with_keepalive(
+    body: AsyncIterator[str], interval: float = KEEPALIVE_SECONDS
+) -> AsyncIterator[str]:
+    """`body`'s chunks, plus KEEPALIVE whenever `body` is quiet for `interval` s.
+
+    `body` runs to completion in one task of its own (so context managers inside
+    it enter and exit in the same task); this generator relays what it yields.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    end = object()
+
+    async def pump() -> None:
+        try:
+            async for chunk in body:
+                queue.put_nowait(chunk)
+        finally:
+            queue.put_nowait(end)
+
+    task = asyncio.create_task(pump())
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=interval)
+            except asyncio.TimeoutError:
+                yield KEEPALIVE
+                continue
+            if chunk is end:
+                break
+            yield chunk
+        await task  # re-raise anything `body` raised
+    finally:
+        if not task.done():  # the client went away mid-stream
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
 def _stream(body: AsyncIterator[str], session_response: Response) -> StreamingResponse:
     stream = StreamingResponse(
-        body,
+        _with_keepalive(body),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -449,6 +495,46 @@ async def verify_file(request: FileRequest):
     except WorkspaceError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+# --- The built frontend --------------------------------------------------------------
+# In the hosted image (see the root Dockerfile) the SvelteKit build is copied to
+# Config.STATIC_DIR and served from this app, so the site and /api share one origin
+# (a first-party guest cookie, no CORS or proxy). Locally there is no build there,
+# and the Vite dev server serves the frontend as before. Registered last, so every
+# route above takes precedence.
+
+def _site_file(root: Path, path: str) -> Path | None:
+    """The file under `root` for a URL path, if one exists (never outside `root`)."""
+    if not path:
+        return None
+    target = (root / path).resolve()
+    return target if target.is_file() and root in target.parents else None
+
+
+def mount_site(target: FastAPI, root: Path) -> bool:
+    """Serve the built frontend in `root` from `target`, after its other routes.
+    Returns False (and does nothing) if `root` has no index.html."""
+    root = root.resolve()
+    if not (root / "index.html").is_file():
+        return False
+
+    @target.get("/{path:path}", include_in_schema=False)
+    async def site(path: str):
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        found = _site_file(root, path)
+        if found is not None:
+            immutable = path.startswith("_app/immutable/")
+            cache = "public, max-age=31536000, immutable" if immutable else "no-cache"
+            return FileResponse(found, headers={"Cache-Control": cache})
+        # Single-page app: every other path gets the shell (adapter-static's fallback).
+        return FileResponse(root / "index.html", headers={"Cache-Control": "no-cache"})
+
+    return True
+
+
+if mount_site(app, Config.STATIC_DIR):
+    log.info("serving the frontend from %s", Config.STATIC_DIR)
 
 if __name__ == "__main__":
     import uvicorn

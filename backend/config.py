@@ -76,6 +76,9 @@ class Config:
     LEAN_MAX_TOTAL_MEMORY = float(os.getenv("LEAN_MAX_TOTAL_MEMORY", "0.9"))
 
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    # The built frontend (`npm run build` output). When it holds an index.html, main.py
+    # serves the site itself, at the same origin as /api (the hosted image does this).
+    STATIC_DIR = _path("STATIC_DIR", "./static")
 
     GUEST_JWT_SECRET = os.getenv("GUEST_JWT_SECRET") or token_urlsafe(32)
     GUEST_COOKIE_SECURE = os.getenv("GUEST_COOKIE_SECURE", "false").lower() == "true"

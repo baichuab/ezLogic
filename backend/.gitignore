@@ -5,3 +5,4 @@ __pycache__/
 workspace/
 workspace.lock
 .pytest_cache/
+static/

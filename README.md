@@ -15,7 +15,8 @@ ezLogic is an intelligent platform that enables mathematicians to write and veri
 ## Getting Started
 
 ### Prerequisites
-- **Node.js** (v18+) and **npm** - For the SvelteKit frontend
+- **Node.js** (v22.17+) and **npm** - For the SvelteKit frontend. `frontend/.npmrc` sets `engine-strict`, so
+  `npm install` refuses older versions; with nvm, run `nvm use` in `frontend/` (it reads `.nvmrc`)
 - **Python** (v3.10+) and **pip** (or **uv**) - For the FastAPI backend
 - **Lean 4** via [elan](https://github.com/leanprover/elan) - For proof verification (optional for development; the agent reports proofs as unverified without it)
 - **OpenRouter API key** - The agent calls LLMs through [OpenRouter](https://openrouter.ai)
@@ -90,6 +91,24 @@ cd frontend && npm install && npm run dev
 # Terminal 2
 cd backend && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && python main.py
 ```
+
+## Hosting the demo
+
+The demo runs on **Google Cloud Run** (Sydney) as one service. See [`deploy/README.md`](deploy/README.md) for
+the steps, costs, pitch-day checklist and clean-up.
+
+- **One image, one address.** The root `Dockerfile` builds the frontend and bundles it with the backend.
+  It also includes Lean 4.35.0, Mathlib v4.35.0 and a prebuilt lean-interact REPL. The backend serves the
+  site itself (`STATIC_DIR`), so the site and `/api` share one origin and the guest cookie stays
+  first-party.
+- **Postgres** is Cloud SQL.
+- **Deploying:** `deploy/cloudrun.sh all` once, then `build` + `deploy` after code changes. Around the
+  pitch, use `pause` / `resume`.
+- **First load is slow.** A new instance needs about 3 minutes to load Mathlib the first time (78 s
+  after that). Once loaded, Lean checks take well under a second, and a typical proof takes about 20 s.
+
+The docker-compose setup (`docker-compose.yml`, `backend/Dockerfile`, `frontend/Dockerfile`) and
+`render.yaml` are separate alternatives and are not used by this deployment.
 
 ## Architecture
 
