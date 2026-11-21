@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 # Deploy the ezLogic demo to Google Cloud Run. See deploy/README.md.
 #
-#   deploy/cloudrun.sh setup     # once: APIs, image registry, Postgres (Cloud SQL), permissions
-#   deploy/cloudrun.sh build     # build the image on Cloud Build (~20-40 min the first time)
-#   deploy/cloudrun.sh deploy    # create/update the Cloud Run service from the last build
-#   deploy/cloudrun.sh all       # setup + build + deploy
-#   deploy/cloudrun.sh url       # print the site's URL
-#   deploy/cloudrun.sh pause     # after the pitch: no instance kept running (stops most billing)
-#   deploy/cloudrun.sh resume    # before the pitch: keep one warm instance again
+#   deploy/cloudrun.sh setup      # once: APIs, image registry, Postgres (Cloud SQL), permissions
+#   deploy/cloudrun.sh build      # build the image on Cloud Build, tagged with the git commit
+#   deploy/cloudrun.sh deploy     # create/update the service and send it ALL traffic (quick fixes)
+#   deploy/cloudrun.sh all        # setup + build + deploy
+#   deploy/cloudrun.sh url        # print the site's URL
+#   deploy/cloudrun.sh pause      # after the pitch: no instance kept running (stops most billing)
+#   deploy/cloudrun.sh resume     # before the pitch: keep one warm instance again
+#
+# Iterating safely (deploy/README.md, "Iterating and rolling back"):
+#   deploy/cloudrun.sh candidate          # deploy the last build with NO traffic, at a test URL
+#   deploy/cloudrun.sh promote            # send all traffic to the tested candidate
+#   deploy/cloudrun.sh rollback [REV]     # send all traffic back to the baseline (deploy/baseline.env)
+#   deploy/cloudrun.sh revisions          # list revisions: traffic, tags, image
+#   deploy/cloudrun.sh mark-baseline NAME # make the serving revision the new baseline
+#   deploy/cloudrun.sh backup NAME        # on-demand Cloud SQL backup
 #
 # Every step is safe to re-run. Settings (override with environment variables):
 #   PROJECT_ID  (default: gcloud's current project)   REGION   (australia-southeast1)
 #   SERVICE     (ezlogic)                              OPENROUTER_MODEL (anthropic/claude-haiku-5.5)
+#   IMAGE_TAG   (latest; or a commit tag from `build`, or a baseline name)
 #   OPENROUTER_API_KEY: taken from the environment, else backend/.env, else asked for.
 set -euo pipefail
 # Never stop to ask (e.g. "enable this API?"): the script enables what it needs itself.
@@ -27,13 +36,16 @@ SQL_INSTANCE="${SQL_INSTANCE:-ezlogic-db}"
 DB_NAME="${DB_NAME:-ezlogic}"
 DB_USER="${DB_USER:-ezlogic}"
 OPENROUTER_MODEL="${OPENROUTER_MODEL:-anthropic/claude-haiku-5.5}"
+IMAGE_TAG="${IMAGE_TAG:-latest}"
+BASELINE_FILE=deploy/baseline.env
 
 if [[ -z "$PROJECT_ID" ]]; then
   echo "No Google Cloud project. Run: gcloud config set project <PROJECT_ID>" >&2
   exit 1
 fi
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:latest"
+IMAGE_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}"
+IMAGE="${IMAGE_BASE}:${IMAGE_TAG}"
 SQL_CONN="${PROJECT_ID}:${REGION}:${SQL_INSTANCE}"
 SITE_URL="https://${SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
 RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
@@ -93,7 +105,8 @@ setup() {
   ensure_sql() {
     gcloud sql instances describe "$SQL_INSTANCE" >/dev/null 2>&1 ||
       gcloud sql instances create "$SQL_INSTANCE" --database-version POSTGRES_16 \
-        --edition enterprise --tier db-f1-micro --region "$REGION" --storage-size 10
+        --edition enterprise --tier db-f1-micro --region "$REGION" --storage-size 10 \
+        --backup-start-time 16:00
   }
   retry ensure_sql
   if ! gcloud sql databases describe "$DB_NAME" --instance "$SQL_INSTANCE" >/dev/null 2>&1; then
@@ -101,34 +114,81 @@ setup() {
   fi
 }
 
-build() {
-  say "Building ${IMAGE} on Cloud Build (Mathlib makes this ~10 GB; first build ~20-40 min)"
-  gcloud builds submit . --tag "$IMAGE" \
-    --timeout 3600s --machine-type e2-highcpu-8 --disk-size 100
+# The commit an image is built from: short sha, plus "-dirty" if tracked files changed.
+commit_tag() {
+  local sha
+  sha="$(git rev-parse --short HEAD)"
+  if git diff --quiet HEAD -- .; then printf '%s' "$sha"; else printf '%s-dirty' "$sha"; fi
 }
 
-deploy() {
-  local flags=(
+build() {
+  local tag
+  tag="$(commit_tag)"
+  say "Building ${IMAGE_BASE}:${tag} on Cloud Build (Mathlib makes this ~10 GB; ~25 min)"
+  gcloud builds submit . --tag "${IMAGE_BASE}:${tag}" \
+    --timeout 3600s --machine-type e2-highcpu-8 --disk-size 100
+  # `latest` follows the newest build. Every build keeps its own commit tag and each
+  # baseline keeps its name (mark-baseline), so earlier images stay deployable.
+  gcloud artifacts docker tags add "${IMAGE_BASE}:${tag}" "${IMAGE_BASE}:latest" --quiet
+  echo "Built ${tag}. Deploy it with: deploy/cloudrun.sh candidate (or IMAGE_TAG=${tag} ...)"
+}
+
+# Settings shared by every revision this script creates.
+run_flags() {
+  RUN_FLAGS=(
     --image "$IMAGE" --region "$REGION"
     --execution-environment gen2 --cpu 2 --memory 8Gi --cpu-boost
     --no-cpu-throttling --min-instances 1 --max-instances 1
     --concurrency 80 --timeout 3600 --allow-unauthenticated
     --add-cloudsql-instances "$SQL_CONN"
+    # Which image a revision runs, shown by `revisions` (label values: [a-z0-9_-]).
+    --update-labels "image=$(printf '%s' "$IMAGE_TAG" | tr -c 'a-z0-9_-' '-')"
   )
   # A new instance reads Mathlib from the image for the first time, which takes a few
   # minutes on Cloud Run (78 s once read); the default 180 s limit is too short.
-  local env="OPENROUTER_MODEL=${OPENROUTER_MODEL},FRONTEND_URL=${SITE_URL},GUEST_COOKIE_SECURE=true"
-  env+=",LEAN_STARTUP_TIMEOUT=900"
-  env+=",OPENROUTER_API_KEY=$(openrouter_key)"
+  RUN_ENV="OPENROUTER_MODEL=${OPENROUTER_MODEL},FRONTEND_URL=${SITE_URL},GUEST_COOKIE_SECURE=true"
+  RUN_ENV+=",LEAN_STARTUP_TIMEOUT=900"
+  RUN_ENV+=",OPENROUTER_API_KEY=$(openrouter_key)"
+}
 
+# Traffic is always pinned to a named revision (never "latest revision"), so nothing
+# moves unless one of these commands moves it.
+serve_revision() {
+  gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-revisions "$1=100" --quiet
+}
+
+latest_revision() {
+  gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.latestCreatedRevisionName)'
+}
+
+traffic_json() {
+  gcloud run services describe "$SERVICE" --region "$REGION" --format=json
+}
+
+# The revision carrying a traffic tag, or nothing.
+tagged_revision() {
+  traffic_json | jq -r --arg tag "$1" '[.status.traffic[]? | select(.tag == $tag)][0].revisionName // empty'
+}
+
+# A revision with a traffic tag keeps its minimum instance running (and billed) even
+# with no traffic, so the only tag used is the short-lived `candidate`.
+drop_candidate_tag() {
+  if [[ -n "$(tagged_revision candidate)" ]]; then
+    gcloud run services update-traffic "$SERVICE" --region "$REGION" --remove-tags candidate --quiet
+  fi
+}
+
+deploy() {
+  run_flags
   if service_exists; then
-    say "Updating ${SERVICE} (database password and session secret are kept)"
-    gcloud run deploy "$SERVICE" "${flags[@]}" --update-env-vars "$env" --quiet
+    say "Updating ${SERVICE} with ${IMAGE} and sending it all traffic (database password and session secret are kept)"
+    gcloud run deploy "$SERVICE" "${RUN_FLAGS[@]}" --update-env-vars "$RUN_ENV" --quiet
+    serve_revision "$(latest_revision)"
   else
     say "Creating ${SERVICE}"
     # A fresh database password (the user is created or reset to match) and a
     # session secret that stays the same across later deploys.
-    local db_password session_secret
+    local db_password session_secret env="$RUN_ENV"
     db_password="$(openssl rand -hex 24)"
     session_secret="$(openssl rand -hex 32)"
     if gcloud sql users list --instance "$SQL_INSTANCE" --format='value(name)' | grep -qx "$DB_USER"; then
@@ -138,7 +198,7 @@ deploy() {
     fi
     env+=",DATABASE_URL=postgresql://${DB_USER}:${db_password}@/${DB_NAME}?host=/cloudsql/${SQL_CONN}"
     env+=",GUEST_JWT_SECRET=${session_secret}"
-    gcloud run deploy "$SERVICE" "${flags[@]}" --set-env-vars "$env" --quiet
+    gcloud run deploy "$SERVICE" "${RUN_FLAGS[@]}" --set-env-vars "$env" --quiet
   fi
   url
 }
@@ -147,13 +207,96 @@ url() {
   gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)'
 }
 
+candidate() {
+  service_exists || { echo "No service yet: run deploy/cloudrun.sh deploy first." >&2; exit 1; }
+  run_flags
+  say "Deploying ${IMAGE} as a candidate with no traffic"
+  gcloud run deploy "$SERVICE" "${RUN_FLAGS[@]}" --update-env-vars "$RUN_ENV" \
+    --no-traffic --tag candidate --quiet
+  traffic_json | jq -r '.status.traffic[]? | select(.tag == "candidate") | "Candidate: \(.revisionName) at \(.url)"'
+  echo "It loads Mathlib first (3-10 min). Test it, then: deploy/cloudrun.sh promote (or rollback)."
+}
+
+promote() {
+  local rev
+  rev="$(tagged_revision candidate)"
+  [[ -n "$rev" ]] || { echo "No candidate revision (deploy/cloudrun.sh candidate)." >&2; exit 1; }
+  say "Sending all traffic to the candidate ${rev}"
+  serve_revision "$rev"
+  drop_candidate_tag
+}
+
+rollback() {
+  local rev="${1:-}"
+  if [[ -z "$rev" ]]; then
+    # shellcheck disable=SC1090
+    source "$BASELINE_FILE"
+    rev="$BASELINE_REVISION"
+  fi
+  say "Rolling back: all traffic to ${rev}"
+  serve_revision "$rev"
+  drop_candidate_tag
+  echo "If ${rev} had no instance running, proofs wait 3-10 min while it loads Mathlib (the site itself works now)."
+}
+
+revisions() {
+  traffic_json | jq -r '.status.traffic[]?
+    | "traffic \(.percent // 0)% -> \(.revisionName)\(if .tag then "  [" + .tag + ": " + .url + "]" else "" end)"'
+  if [[ -f "$BASELINE_FILE" ]]; then
+    sed -n 's/^BASELINE_REVISION=/baseline  -> /p' "$BASELINE_FILE"
+  fi
+  gcloud run revisions list --service "$SERVICE" --region "$REGION" \
+    --format='table(metadata.name,metadata.labels.image,metadata.creationTimestamp.date("%Y-%m-%d %H:%M"))'
+}
+
+backup() {
+  local name="${1:?usage: deploy/cloudrun.sh backup NAME}"
+  gcloud sql backups create --instance "$SQL_INSTANCE" --description "$name"
+}
+
+# Freeze what is serving now as the new baseline: tag its image, back up the
+# database, tag the git commit, and record it in deploy/baseline.env.
+mark_baseline() {
+  local name="${1:?usage: deploy/cloudrun.sh mark-baseline NAME}"
+  local rev digest
+  rev="$(traffic_json | jq -r '[.status.traffic[]? | select((.percent // 0) == 100)][0].revisionName // empty')"
+  [[ -n "$rev" ]] || { echo "No revision is serving 100% of traffic." >&2; exit 1; }
+  digest="$(gcloud run revisions describe "$rev" --region "$REGION" --format='value(status.imageDigest)')"
+  say "Baseline ${name}: revision ${rev}, image ${digest##*@}"
+  gcloud artifacts docker tags add "$digest" "${IMAGE_BASE}:${name}" --quiet
+  backup "$name"
+  git tag -a "$name" -m "Cloud Run demo baseline (revision ${rev}, image ${digest##*@})"
+  {
+    echo "# The known-good demo: what \`deploy/cloudrun.sh rollback\` returns to."
+    echo "# Written by \`deploy/cloudrun.sh mark-baseline <name>\`; commit it (and push the git tag)."
+    echo "# See deploy/README.md, \"Iterating and rolling back\"."
+    echo "BASELINE_NAME=${name}"
+    echo "BASELINE_REVISION=${rev}"
+    echo "BASELINE_IMAGE_TAG=${name}"
+    echo "BASELINE_GIT_TAG=${name}"
+    echo "BASELINE_SQL_BACKUP=${name}"
+  } > "$BASELINE_FILE"
+  echo "Recorded in ${BASELINE_FILE}. Commit it, then: git push origin ${name}"
+}
+
 case "${1:-}" in
   setup) setup ;;
   build) build ;;
   deploy) deploy ;;
   all) setup; build; deploy ;;
   url) url ;;
-  pause) gcloud run services update "$SERVICE" --region "$REGION" --min-instances 0 --cpu-throttling ;;
-  resume) gcloud run services update "$SERVICE" --region "$REGION" --min-instances 1 --no-cpu-throttling ;;
-  *) sed -n '2,15p' "$0"; exit 1 ;;
+  # pause/resume create a new revision (same image, new scaling) and move traffic to it.
+  pause)
+    gcloud run services update "$SERVICE" --region "$REGION" --min-instances 0 --cpu-throttling --quiet
+    serve_revision "$(latest_revision)" ;;
+  resume)
+    gcloud run services update "$SERVICE" --region "$REGION" --min-instances 1 --no-cpu-throttling --quiet
+    serve_revision "$(latest_revision)" ;;
+  candidate) candidate ;;
+  promote) promote ;;
+  rollback) rollback "${2:-}" ;;
+  revisions) revisions ;;
+  mark-baseline) mark_baseline "${2:-}" ;;
+  backup) backup "${2:-}" ;;
+  *) sed -n '2,24p' "$0"; exit 1 ;;
 esac
