@@ -104,8 +104,8 @@ the steps, costs, pitch-day checklist and clean-up.
 - **Postgres** is Cloud SQL.
 - **Deploying:** `deploy/cloudrun.sh all` once. After code changes, run `build`, then `candidate`
   (a no-traffic test URL), then `promote`. Around the pitch, use `pause` / `resume`.
-- **Rolling back.** The working demo is frozen as `demo-baseline-1` (git tag, image tag, Cloud
-  Run revision and database backup). `deploy/cloudrun.sh rollback` moves traffic back to it in
+- **Rolling back.** The working demo is frozen as `demo-baseline-2` (git tag, image tag, Cloud
+  Run revision and database backup; `demo-baseline-1` is the earlier OpenRouter version). `deploy/cloudrun.sh rollback` moves traffic back to it in
   seconds. Proofs are slow for 3–10 minutes while its Mathlib reloads.
 - **First load is slow.** A new instance needs about 3 minutes to load Mathlib the first time (78 s
   after that). Once loaded, Lean checks take well under a second, and a typical proof takes about 20 s.

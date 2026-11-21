@@ -78,7 +78,7 @@ deploy/cloudrun.sh all        # = setup + build + deploy
 
   Settings on the service:
   - `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`. New revisions drop the old `OPENROUTER_*` settings;
-    the `demo-baseline-1` revision predates the switch and still uses OpenRouter;
+    `demo-baseline-1` (revision `ezlogic-00002-6tq`) predates the switch and still uses OpenRouter;
   - `DATABASE_URL`, over the Cloud SQL socket;
   - `GUEST_JWT_SECRET` and `GUEST_COOKIE_SECURE=true`;
   - `FRONTEND_URL`;
@@ -91,15 +91,20 @@ After changing the code, follow [Iterating and rolling back](#iterating-and-roll
 new version at once.
 
 ## Iterating and rolling back
-The working demo is frozen as **`demo-baseline-1`**. `deploy/baseline.env` records it, and
-`rollback` returns to it.
+The working demo is frozen as **`demo-baseline-2`** (Anthropic API). `deploy/baseline.env` records
+it, and `rollback` returns to it.
 
 | Layer | Baseline | How to get it back |
 | --- | --- | --- |
-| Live service | Cloud Run revision `ezlogic-00002-6tq` (image + settings + environment variables) | `deploy/cloudrun.sh rollback` (traffic in seconds; proofs 3–10 min later if cold) |
-| Image | Artifact Registry tag `ezlogic:demo-baseline-1` (`sha256:e693f805…`) | `IMAGE_TAG=demo-baseline-1 deploy/cloudrun.sh candidate` |
-| Code | git tag `demo-baseline-1` (`b7ed391`, `main` after PR #15) | `git checkout demo-baseline-1` |
-| Database | Cloud SQL backup `demo-baseline-1`, plus daily automatic backups (7 kept) | `gcloud sql backups list --instance ezlogic-db`, then `gcloud sql backups restore <id> --restore-instance ezlogic-db` |
+| Live service | Cloud Run revision `ezlogic-00010-tic` (image + settings + environment variables) | `deploy/cloudrun.sh rollback` (traffic in seconds; proofs 3–10 min later if cold) |
+| Image | Artifact Registry tag `ezlogic:demo-baseline-2` (`sha256:6746806d…`) | `IMAGE_TAG=demo-baseline-2 deploy/cloudrun.sh candidate` |
+| Code | git tag `demo-baseline-2` (`5d21d51`: `main` after PR #17, plus the Anthropic deploy settings) | `git checkout demo-baseline-2` |
+| Database | Cloud SQL backup `demo-baseline-2`, plus daily automatic backups (7 kept) | `gcloud sql backups list --instance ezlogic-db`, then `gcloud sql backups restore <id> --restore-instance ezlogic-db` |
+
+**Earlier baseline:** `demo-baseline-1` is the first working demo, before the switch to the
+Anthropic API: revision `ezlogic-00002-6tq`, OpenRouter, code `b7ed391`. It has the same git tag,
+image tag and Cloud SQL backup names. Return to it with
+`deploy/cloudrun.sh rollback ezlogic-00002-6tq`; it still has its own OpenRouter key.
 
 Every new version goes through a test URL before visitors see it:
 ```bash
