@@ -36,7 +36,7 @@ These are estimates; check [Cloud Run pricing](https://cloud.google.com/run/pric
 | Cloud Run, kept warm | 2 vCPU, 8 GiB, 1 instance | $4.5–6 a day while running |
 | Cloud SQL | db-f1-micro, 10 GB | ~$0.30 a day |
 | Image storage | ~10 GB in Artifact Registry | ~$1 a month |
-| LLM (OpenRouter, Haiku 5.5) | ~1¢ per proof | a few dollars |
+| LLM (Anthropic API, Claude Haiku 5.5) | ~1¢ per proof | a few dollars |
 
 A new Google Cloud account's $300 trial credit (90 days) covers the Google part. After the
 pitch, run `deploy/cloudrun.sh pause`, or delete everything (see [Clean up](#clean-up)).
@@ -50,9 +50,14 @@ pitch, run `deploy/cloudrun.sh pause`, or delete everything (see [Clean up](#cle
    gcloud auth login
    gcloud config set project <PROJECT_ID>
    ```
-3. **The OpenRouter key:** the script takes `OPENROUTER_API_KEY` from the environment, else from
-   `backend/.env`, else asks for it. It is stored as an environment variable of the Cloud Run
-   service, so anyone with access to the project can see it.
+3. **The Anthropic API key:** the script takes `ANTHROPIC_API_KEY` from the environment, else from
+   `backend/.env`, else asks for it.
+   - **Where it ends up:** an environment variable of the Cloud Run service. The image never
+     contains `backend/.env`. Anyone with access to the project can see it.
+   - **What else is copied:** only the key. The service uses the backend's default endpoint
+     (`https://api.anthropic.com/v1/`) and `ANTHROPIC_MODEL` (default `claude-haiku-5-5`; override
+     when running the script). It does not use any `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` from
+     your local `.env`.
 
 ## Deploy
 ```bash
@@ -72,7 +77,8 @@ deploy/cloudrun.sh all        # = setup + build + deploy
   both.
 
   Settings on the service:
-  - `OPENROUTER_API_KEY` and `OPENROUTER_MODEL`;
+  - `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`. New revisions drop the old `OPENROUTER_*` settings;
+    `demo-baseline-1` (revision `ezlogic-00002-6tq`) predates the switch and still uses OpenRouter;
   - `DATABASE_URL`, over the Cloud SQL socket;
   - `GUEST_JWT_SECRET` and `GUEST_COOKIE_SECURE=true`;
   - `FRONTEND_URL`;
@@ -85,15 +91,20 @@ After changing the code, follow [Iterating and rolling back](#iterating-and-roll
 new version at once.
 
 ## Iterating and rolling back
-The working demo is frozen as **`demo-baseline-1`**. `deploy/baseline.env` records it, and
-`rollback` returns to it.
+The working demo is frozen as **`demo-baseline-2`** (Anthropic API). `deploy/baseline.env` records
+it, and `rollback` returns to it.
 
 | Layer | Baseline | How to get it back |
 | --- | --- | --- |
-| Live service | Cloud Run revision `ezlogic-00002-6tq` (image + settings + environment variables) | `deploy/cloudrun.sh rollback` (traffic in seconds; proofs 3–10 min later if cold) |
-| Image | Artifact Registry tag `ezlogic:demo-baseline-1` (`sha256:e693f805…`) | `IMAGE_TAG=demo-baseline-1 deploy/cloudrun.sh candidate` |
-| Code | git tag `demo-baseline-1` (`b7ed391`, `main` after PR #15) | `git checkout demo-baseline-1` |
-| Database | Cloud SQL backup `demo-baseline-1`, plus daily automatic backups (7 kept) | `gcloud sql backups list --instance ezlogic-db`, then `gcloud sql backups restore <id> --restore-instance ezlogic-db` |
+| Live service | Cloud Run revision `ezlogic-00010-tic` (image + settings + environment variables) | `deploy/cloudrun.sh rollback` (traffic in seconds; proofs 3–10 min later if cold) |
+| Image | Artifact Registry tag `ezlogic:demo-baseline-2` (`sha256:6746806d…`) | `IMAGE_TAG=demo-baseline-2 deploy/cloudrun.sh candidate` |
+| Code | git tag `demo-baseline-2` (`5d21d51`: `main` after PR #17, plus the Anthropic deploy settings) | `git checkout demo-baseline-2` |
+| Database | Cloud SQL backup `demo-baseline-2`, plus daily automatic backups (7 kept) | `gcloud sql backups list --instance ezlogic-db`, then `gcloud sql backups restore <id> --restore-instance ezlogic-db` |
+
+**Earlier baseline:** `demo-baseline-1` is the first working demo, before the switch to the
+Anthropic API: revision `ezlogic-00002-6tq`, OpenRouter, code `b7ed391`. It has the same git tag,
+image tag and Cloud SQL backup names. Return to it with
+`deploy/cloudrun.sh rollback ezlogic-00002-6tq`; it still has its own OpenRouter key.
 
 Every new version goes through a test URL before visitors see it:
 ```bash

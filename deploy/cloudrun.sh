@@ -19,9 +19,10 @@
 #
 # Every step is safe to re-run. Settings (override with environment variables):
 #   PROJECT_ID  (default: gcloud's current project)   REGION   (australia-southeast1)
-#   SERVICE     (ezlogic)                              OPENROUTER_MODEL (anthropic/claude-haiku-5.5)
+#   SERVICE     (ezlogic)                              ANTHROPIC_MODEL (claude-haiku-5-5)
 #   IMAGE_TAG   (latest; or a commit tag from `build`, or a baseline name)
-#   OPENROUTER_API_KEY: taken from the environment, else backend/.env, else asked for.
+#   ANTHROPIC_API_KEY: taken from the environment, else backend/.env, else asked for. Only the
+#   key is copied to Cloud Run; the base URL is the backend's default (api.anthropic.com).
 set -euo pipefail
 # Never stop to ask (e.g. "enable this API?"): the script enables what it needs itself.
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
@@ -35,7 +36,7 @@ REPO="${REPO:-ezlogic}"
 SQL_INSTANCE="${SQL_INSTANCE:-ezlogic-db}"
 DB_NAME="${DB_NAME:-ezlogic}"
 DB_USER="${DB_USER:-ezlogic}"
-OPENROUTER_MODEL="${OPENROUTER_MODEL:-anthropic/claude-haiku-5.5}"
+ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-haiku-5-5}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 BASELINE_FILE=deploy/baseline.env
 
@@ -70,14 +71,16 @@ service_exists() {
   gcloud run services describe "$SERVICE" --region "$REGION" --format='value(metadata.name)' >/dev/null 2>&1
 }
 
-openrouter_key() {
-  if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
-    printf '%s' "$OPENROUTER_API_KEY"
-  elif [[ -f backend/.env ]] && grep -q '^OPENROUTER_API_KEY=.' backend/.env; then
-    grep '^OPENROUTER_API_KEY=' backend/.env | head -1 | cut -d= -f2- | tr -d '"'"'"
+# The LLM key for the service. Cloud Run never sees backend/.env (.dockerignore keeps
+# it out of the image), so the key is copied into the service's environment variables.
+anthropic_key() {
+  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    printf '%s' "$ANTHROPIC_API_KEY"
+  elif [[ -f backend/.env ]] && grep -q '^ANTHROPIC_API_KEY=.' backend/.env; then
+    grep '^ANTHROPIC_API_KEY=' backend/.env | head -1 | cut -d= -f2- | tr -d '"'"'"
   else
     local key
-    read -rsp "OpenRouter API key: " key </dev/tty
+    read -rsp "Anthropic API key: " key </dev/tty
     echo >&2
     printf '%s' "$key"
   fi
@@ -146,9 +149,12 @@ run_flags() {
   )
   # A new instance reads Mathlib from the image for the first time, which takes a few
   # minutes on Cloud Run (78 s once read); the default 180 s limit is too short.
-  RUN_ENV="OPENROUTER_MODEL=${OPENROUTER_MODEL},FRONTEND_URL=${SITE_URL},GUEST_COOKIE_SECURE=true"
+  RUN_ENV="ANTHROPIC_MODEL=${ANTHROPIC_MODEL},FRONTEND_URL=${SITE_URL},GUEST_COOKIE_SECURE=true"
   RUN_ENV+=",LEAN_STARTUP_TIMEOUT=900"
-  RUN_ENV+=",OPENROUTER_API_KEY=$(openrouter_key)"
+  RUN_ENV+=",ANTHROPIC_API_KEY=$(anthropic_key)"
+  # Settings earlier revisions had and new ones must not keep (the OpenRouter era).
+  # Older revisions keep their own copies, so rolling back to them still works.
+  RUN_REMOVE="OPENROUTER_API_KEY,OPENROUTER_MODEL"
 }
 
 # Traffic is always pinned to a named revision (never "latest revision"), so nothing
@@ -182,7 +188,8 @@ deploy() {
   run_flags
   if service_exists; then
     say "Updating ${SERVICE} with ${IMAGE} and sending it all traffic (database password and session secret are kept)"
-    gcloud run deploy "$SERVICE" "${RUN_FLAGS[@]}" --update-env-vars "$RUN_ENV" --quiet
+    gcloud run deploy "$SERVICE" "${RUN_FLAGS[@]}" --update-env-vars "$RUN_ENV" \
+      --remove-env-vars "$RUN_REMOVE" --quiet
     serve_revision "$(latest_revision)"
   else
     say "Creating ${SERVICE}"
@@ -212,7 +219,7 @@ candidate() {
   run_flags
   say "Deploying ${IMAGE} as a candidate with no traffic"
   gcloud run deploy "$SERVICE" "${RUN_FLAGS[@]}" --update-env-vars "$RUN_ENV" \
-    --no-traffic --tag candidate --quiet
+    --remove-env-vars "$RUN_REMOVE" --no-traffic --tag candidate --quiet
   traffic_json | jq -r '.status.traffic[]? | select(.tag == "candidate") | "Candidate: \(.revisionName) at \(.url)"'
   echo "It loads Mathlib first (3-10 min). Test it, then: deploy/cloudrun.sh promote (or rollback)."
 }
