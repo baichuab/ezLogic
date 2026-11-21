@@ -237,6 +237,60 @@ def _run_in_repl(code: str, label: str) -> LeanResult:
     return LeanResult(ok=ok, messages=messages)
 
 
+class LeanUnavailable(Exception):
+    """Lean can't run a command: not installed, the workspace isn't a Lake project
+    with Mathlib, or the REPL failed / timed out."""
+
+
+def run_raw(
+    code: str | None,
+    *,
+    all_tactics: bool = False,
+    declarations: bool = False,
+    timeout: float | None = None,
+    env: int | None = None,
+):
+    """Run `code` on top of the shared Mathlib environment and return lean-interact's
+    raw `CommandResponse` (messages, tactics, declarations, ...). Blocking.
+
+    For callers that need more than `LeanResult`'s summary, e.g. the output of an
+    appended metaprogram (see lemma_graph/). `import` lines are blanked as in
+    `_run_in_repl`, keeping line numbers. `env` continues from the state an earlier
+    response left instead (only valid while the REPL hasn't restarted since).
+    Raises `LeanUnavailable` instead of returning an error result.
+    """
+    from lean_interact import Command
+    from lean_interact.interface import LeanError
+
+    if not shutil.which(Config.LAKE_PATH):
+        raise LeanUnavailable(LEAN_MISSING)
+    try:
+        server = _get_server()
+        base_env = _get_base_env(server)
+    except Exception as e:
+        raise LeanUnavailable(f"{type(e).__name__}: {e}") from e
+    if base_env is None:
+        raise LeanUnavailable(
+            f"{Config.WORKSPACE_DIR} is not a Lake project with Mathlib, so there is no "
+            "preloaded Mathlib environment to run on"
+        )
+    try:
+        response = server.run(
+            Command(
+                cmd=_without_imports(code or ""),
+                env=base_env if env is None else env,
+                all_tactics=all_tactics,
+                declarations=declarations,
+            ),
+            timeout=timeout or Config.LEAN_TIMEOUT,
+        )
+    except Exception as e:  # timeouts, REPL crashes, ...
+        raise LeanUnavailable(f"{type(e).__name__}: {e}") from e
+    if isinstance(response, LeanError):
+        raise LeanUnavailable(response.message)
+    return response
+
+
 async def _check(code: str, label: str) -> LeanResult:
     try:
         # The inner lean-interact `timeout=` (LEAN_TIMEOUT, in _run_in_repl) covers

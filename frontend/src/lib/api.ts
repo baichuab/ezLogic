@@ -1,4 +1,4 @@
-import { mockEvents } from './mock';
+import { mockEvents, mockExpandLemmaGraph, mockLemmaGraph } from './mock';
 import { KIND_LABEL } from './format';
 import type {
 	AgentDoneEvent,
@@ -8,6 +8,8 @@ import type {
 	HistoryResponse,
 	HistoryTurn,
 	LeanToolResult,
+	LemmaGraph,
+	LemmaGraphOptions,
 	LiveItem,
 	ProofStep,
 	StepKind,
@@ -286,6 +288,67 @@ export async function getHistory(chatId: string, signal?: AbortSignal): Promise<
 		signal
 	});
 	return data.turns.flatMap(fromTurn);
+}
+
+// ---------------------------------------------------------------------------
+// Lemma dependency graph (`POST /api/lemma-graph`)
+
+function lemmaGraphBody(opts: LemmaGraphOptions) {
+	return {
+		...(opts.depth !== undefined && { depth: opts.depth }),
+		...(opts.maxNodes !== undefined && { max_nodes: opts.maxNodes }),
+		...(opts.includeCore && { include_core: true })
+	};
+}
+
+const mockDelay = (signal?: AbortSignal) =>
+	new Promise<void>((resolve, reject) => {
+		const t = setTimeout(resolve, 450);
+		signal?.addEventListener('abort', () => {
+			clearTimeout(t);
+			reject(new ApiError('aborted', 'Request aborted'));
+		});
+	});
+
+/** The graph of theorems `code` relies on, followed into Mathlib down to the axioms. */
+export async function getLemmaGraph(
+	code: string,
+	opts: LemmaGraphOptions = {},
+	signal?: AbortSignal
+): Promise<LemmaGraph> {
+	if (isMockMode) {
+		await mockDelay(signal);
+		return mockLemmaGraph(opts.depth);
+	}
+	await ensureSession();
+	return fetchJson<LemmaGraph>('/api/lemma-graph', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ code, ...lemmaGraphBody(opts) }),
+		signal
+	});
+}
+
+/**
+ * The chain below library theorems a graph didn't follow (its `truncated` nodes). Depths in the
+ * result start at 0 at `names`; merge it with `mergeExpansion` (graph.ts).
+ */
+export async function expandLemmaGraph(
+	names: string[],
+	opts: LemmaGraphOptions = {},
+	signal?: AbortSignal
+): Promise<LemmaGraph> {
+	if (isMockMode) {
+		await mockDelay(signal);
+		return mockExpandLemmaGraph(names, opts.depth);
+	}
+	await ensureSession();
+	return fetchJson<LemmaGraph>('/api/lemma-graph', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ expand: names, ...lemmaGraphBody(opts) }),
+		signal
+	});
 }
 
 // ---------------------------------------------------------------------------

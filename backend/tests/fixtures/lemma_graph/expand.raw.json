@@ -1,0 +1,215 @@
+{
+ "meta": {
+  "axioms": [
+   {
+    "id": "Classical.choice",
+    "module": "Init.Prelude",
+    "statement": "{α : Sort u} → Nonempty α → α"
+   },
+   {
+    "id": "Quot.sound",
+    "module": "Init.Prelude",
+    "statement": "∀ {α : Sort u} {r : α → α → Prop} {a b : α}, r a b → Quot.mk r a = Quot.mk r b"
+   },
+   {
+    "id": "propext",
+    "module": "Init.Core",
+    "statement": "∀ {a b : Prop}, (a ↔ b) → a = b"
+   }
+  ],
+  "lean_version": "4.35.0",
+  "nodes": [
+   {
+    "axioms": [
+     "Classical.choice",
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "Finset.sum_insert",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.BigOperators.Group.Finset.Basic",
+    "range": null,
+    "statement": "∀ {ι : Type u_1} {M : Type u_4} {s : Finset ι} {a : ι} [inst : AddCommMonoid M] {f : ι → M} [inst_1 : DecidableEq ι],\n  a ∉ s → ∑ x ∈ insert a s, f x = f a + ∑ x ∈ s, f x",
+    "truncated": false,
+    "uses": [
+     "Finset.fold_insert",
+     "add_assoc",
+     "add_comm"
+    ]
+   },
+   {
+    "axioms": [
+     "Classical.choice",
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Finset.fold_insert",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Data.Finset.Fold",
+    "range": null,
+    "statement": "∀ {α : Type u_1} {β : Type u_2} {op : β → β → β} [hc : Std.Commutative op] [ha : Std.Associative op] {f : α → β} {b : β}\n  {s : Finset α} {a : α} [inst : DecidableEq α],\n  a ∉ s → Finset.fold op b f (insert a s) = op (f a) (Finset.fold op b f s)",
+    "truncated": false,
+    "uses": [
+     "Finset.insert_val",
+     "Multiset.fold_cons_left",
+     "Multiset.map_cons",
+     "Multiset.ndinsert_of_notMem"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "add_assoc",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Semigroup",
+    "range": null,
+    "statement": "∀ {G : Type u_1} [inst : AddSemigroup G] (a b c : G), a + b + c = a + (b + c)",
+    "truncated": false,
+    "uses": [
+     "AddSemigroup.add_assoc"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "add_comm",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Semigroup",
+    "range": null,
+    "statement": "∀ {G : Type u_1} [inst : AddCommMagma G] (a b : G), a + b = b + a",
+    "truncated": false,
+    "uses": [
+     "AddCommMagma.add_comm"
+    ]
+   },
+   {
+    "axioms": [
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Finset.insert_val",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Data.Finset.Insert",
+    "range": null,
+    "statement": "∀ {α : Type u_1} [inst : DecidableEq α] (a : α) (s : Finset α), (insert a s).val = Multiset.ndinsert a s.val",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Multiset.fold_cons_left",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Data.Multiset.Fold",
+    "range": null,
+    "statement": "∀ {α : Type u_1} (op : α → α → α) [hc : Std.Commutative op] [ha : Std.Associative op] (b a : α) (s : Multiset α),\n  Multiset.fold op b (a ::ₘ s) = op a (Multiset.fold op b s)",
+    "truncated": true,
+    "uses": []
+   },
+   {
+    "axioms": [
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Multiset.map_cons",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Data.Multiset.MapFold",
+    "range": null,
+    "statement": "∀ {α : Type u_1} {β : Type v} (f : α → β) (a : α) (s : Multiset α), Multiset.map f (a ::ₘ s) = f a ::ₘ Multiset.map f s",
+    "truncated": false,
+    "uses": [
+     "Quot.inductionOn"
+    ]
+   },
+   {
+    "axioms": [
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Multiset.ndinsert_of_notMem",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Data.Multiset.FinsetOps",
+    "range": null,
+    "statement": "∀ {α : Type u_1} [inst : DecidableEq α] {a : α} {s : Multiset α}, a ∉ s → Multiset.ndinsert a s = a ::ₘ s",
+    "truncated": true,
+    "uses": [
+     "Quot.inductionOn"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": true,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "AddSemigroup.add_assoc",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Semigroup",
+    "range": null,
+    "statement": "∀ {G : Type u_2} [self : AddSemigroup G] (a b c : G), a + b + c = a + (b + c)",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": true,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "AddCommMagma.add_comm",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Semigroup",
+    "range": null,
+    "statement": "∀ {G : Type u_2} [self : AddCommMagma G] (a b : G), a + b = b + a",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 3,
+    "direct_axioms": [],
+    "id": "Quot.inductionOn",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Core",
+    "range": null,
+    "statement": "∀ {α : Sort u} {r : α → α → Prop} {motive : Quot r → Prop} (q : Quot r), (∀ (a : α), motive (Quot.mk r a)) → motive q",
+    "truncated": false,
+    "uses": []
+   }
+  ]
+ }
+}

@@ -181,3 +181,61 @@ export interface SessionInfo {
 	expires_at: string;
 	created: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Lemma dependency graph (`POST /api/lemma-graph`, backend/lemma_graph/README.md)
+
+export type LemmaNodeKind = 'theorem' | 'example' | 'axiom';
+/** local: written in the proof; otherwise the library the constant comes from. */
+export type LemmaOrigin = 'local' | 'mathlib' | 'core' | 'batteries' | 'other';
+
+export interface LemmaNode {
+	/** Lean's full name ("Finset.sum_range_succ"); "example@<line>" for examples. */
+	id: string;
+	/** The name to show (private names as written, "example (line 14)"). */
+	label: string;
+	kind: LemmaNodeKind;
+	origin: LemmaOrigin;
+	module: string | null;
+	/** The theorem's type, as Lean prints it. */
+	statement: string | null;
+	/** A field of a class (e.g. `MulOneClass.mul_one`): an axiom of that structure. */
+	class_field: boolean;
+	/** Links from the nearest of the proof's own theorems (0); null for axioms. */
+	depth: number | null;
+	/** Its dependencies weren't followed (depth / node limit): it can be expanded. */
+	truncated: boolean;
+	/** Local nodes: false if Lean reported an error in it or it relies on `sorry`. */
+	ok: boolean;
+	/** Local nodes: 1-based inclusive lines in the Lean source. */
+	start_line: number | null;
+	end_line: number | null;
+	/** Every axiom it relies on (`#print axioms`), or null if not computed. */
+	axioms: string[] | null;
+}
+
+export interface LemmaEdge {
+	/** The dependent node. */
+	src: string;
+	/** What it depends on. */
+	dst: string;
+	kind: 'uses' | 'axiom';
+}
+
+export interface LemmaGraph {
+	ok: boolean;
+	truncated: boolean;
+	/** The proof's own theorems and examples, in source order. */
+	roots: string[];
+	nodes: LemmaNode[];
+	edges: LemmaEdge[];
+	messages: { severity: string; line: number | null; column: number | null; text: string }[];
+	notes: string[];
+	lean_version: string | null;
+}
+
+export interface LemmaGraphOptions {
+	depth?: number;
+	maxNodes?: number;
+	includeCore?: boolean;
+}

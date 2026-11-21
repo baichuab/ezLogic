@@ -10,12 +10,14 @@ import {
 	emptyLiveMessage,
 	endLive,
 	ensureSession,
+	expandLemmaGraph,
 	extractLeanFile,
 	finalizeLive,
 	fromDone,
 	fromReply,
 	fromTurn,
 	getHistory,
+	getLemmaGraph,
 	streamChat,
 	toolSucceeded
 } from './api';
@@ -814,5 +816,62 @@ describe('fromTurn', () => {
 	it('ignores reply when it just duplicates response (no explanation was ever stored)', () => {
 		const [, assistant] = fromTurn({ ...turn, reply: turn.response });
 		expect(assistant.steps[0].title).toBe('Lean proof');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Lemma dependency graph requests
+
+describe('lemma graph requests', () => {
+	const emptyGraph = { ok: true, truncated: false, roots: [], nodes: [], edges: [], messages: [], notes: [], lean_version: null };
+
+	function stubGraphFetch() {
+		const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+			if (url.includes('/api/session')) return new Response(null, { status: 204 });
+			return jsonResponse(emptyGraph);
+		});
+		vi.stubGlobal('fetch', fetchMock);
+		return fetchMock;
+	}
+
+	const graphCall = (fetchMock: ReturnType<typeof vi.fn>) =>
+		fetchMock.mock.calls.find(([url]) => String(url).includes('/api/lemma-graph'))!;
+
+	it('posts the Lean source with snake_case options, after the session check', async () => {
+		const fetchMock = stubGraphFetch();
+		await expect(getLemmaGraph('theorem t : True := trivial', { depth: 2, maxNodes: 50 })).resolves.toEqual(emptyGraph);
+
+		expect(String(fetchMock.mock.calls[0][0])).toContain('/api/session');
+		const [, init] = graphCall(fetchMock);
+		expect(init).toMatchObject({ method: 'POST', credentials: 'include' });
+		expect(JSON.parse(init.body)).toEqual({ code: 'theorem t : True := trivial', depth: 2, max_nodes: 50 });
+	});
+
+	it('leaves unset options out, so the server defaults apply', async () => {
+		const fetchMock = stubGraphFetch();
+		await getLemmaGraph('example : True := trivial');
+		expect(JSON.parse(graphCall(fetchMock)[1].body)).toEqual({ code: 'example : True := trivial' });
+	});
+
+	it('expands by name without resending the source', async () => {
+		const fetchMock = stubGraphFetch();
+		await expandLemmaGraph(['Finset.sum_insert'], { depth: 2, includeCore: true });
+		expect(JSON.parse(graphCall(fetchMock)[1].body)).toEqual({
+			expand: ['Finset.sum_insert'],
+			depth: 2,
+			include_core: true
+		});
+	});
+
+	it('reports a 503 from Lean as an ApiError with its detail', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn().mockImplementation(async (url: string) =>
+				url.includes('/api/session')
+					? new Response(null, { status: 204 })
+					: new Response('{"detail": "Lean is not installed"}', { status: 503 })
+			)
+		);
+		await expect(getLemmaGraph('x')).rejects.toMatchObject({ kind: 'http', status: 503, message: 'Lean is not installed' });
 	});
 });

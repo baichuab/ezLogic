@@ -24,6 +24,7 @@
 	import ProofSteps from '#lib/components/ProofSteps.svelte';
 	import Sidebar from '#lib/components/Sidebar.svelte';
 	import StepDetail from '#lib/components/StepDetail.svelte';
+	import LemmaGraphView from '#lib/components/LemmaGraphView.svelte';
 
 	const STATUS_ANNOUNCE: Record<VerificationStatus, string> = {
 		verified: 'Verified in Lean 4',
@@ -35,6 +36,8 @@
 	let chats = $state<Chat[]>(isMockMode ? demoChats() : []);
 	let activeId = $state<string | null>(chats[0]?.id ?? null);
 	let selection = $state<{ messageId: string; stepId: string } | null>(null);
+	/** The assistant message whose lemma dependency graph is open (instead of a step's detail). */
+	let graphMessageId = $state<string | null>(null);
 	let showLean = $state(false);
 	let sidebarPinned = $state(true);
 	let drawerOpen = $state(false);
@@ -85,7 +88,14 @@
 		selectedMessage ? selectedMessage.steps.findIndex((s) => s.id === selection!.stepId) : -1
 	);
 	const selectedStep = $derived(selectedMessage?.steps[selectedIndex] ?? null);
-	const expanded = $derived(!!selectedStep);
+	const graphMessage = $derived(
+		graphMessageId && active
+			? (active.messages.find(
+					(m): m is AssistantMessage => m.role === 'assistant' && m.id === graphMessageId && !!m.lean
+				) ?? null)
+			: null
+	);
+	const expanded = $derived(!!selectedStep || !!graphMessage);
 	/** The sidebar docks only when no step is expanded (sketch state 3 collapses it to ≡). */
 	const sidebarDocked = $derived(sidebarPinned && !expanded);
 
@@ -96,6 +106,7 @@
 			return;
 		}
 		selection = { messageId, stepId };
+		graphMessageId = null;
 		drawerOpen = false;
 	}
 
@@ -103,9 +114,20 @@
 		selection = null;
 	}
 
+	function toggleGraph(messageId: string) {
+		if (graphMessageId === messageId) {
+			graphMessageId = null;
+			return;
+		}
+		graphMessageId = messageId;
+		selection = null;
+		drawerOpen = false;
+	}
+
 	async function openChat(id: string) {
 		activeId = id;
 		selection = null;
+		graphMessageId = null;
 		drawerOpen = false;
 		historyError = null;
 		const chat = chats.find((c) => c.id === id);
@@ -122,6 +144,7 @@
 		fileError = '';
 		activeId = null;
 		selection = null;
+		graphMessageId = null;
 		drawerOpen = false;
 		historyError = null;
 	}
@@ -331,6 +354,7 @@
 		if (e.key === 'Escape') {
 			if (drawerOpen) drawerOpen = false;
 			else if (selection) closeDetail();
+			else if (graphMessageId) graphMessageId = null;
 			return;
 		}
 		if (!selectedMessage || selectedIndex < 0) return;
@@ -484,7 +508,9 @@
 										message={msg}
 										compact={expanded}
 										selectedStepId={selection?.messageId === msg.id ? (selection?.stepId ?? null) : null}
+										graphOpen={graphMessage?.id === msg.id}
 										onselect={(stepId) => selectStep(msg.id, stepId)}
+										ongraph={() => toggleGraph(msg.id)}
 									/>
 								{/if}
 							{/each}
@@ -521,6 +547,15 @@
 						onclose={closeDetail}
 						onstep={(stepId) => selectStep(selectedMessage.id, stepId)}
 					/>
+				</div>
+			{:else if graphMessage}
+				<!-- Lemma dependency graph of one proof -->
+				<div class="hidden w-4 shrink-0 lg:block" aria-hidden="true"></div>
+				<div
+					class="fixed inset-0 z-30 bg-paper p-3 lg:static lg:z-auto lg:min-w-0 lg:flex-1 lg:bg-transparent lg:p-0 lg:pb-2 lg:pt-1"
+					in:fly={{ x: 24, duration: 200 }}
+				>
+					<LemmaGraphView message={graphMessage} onclose={() => (graphMessageId = null)} />
 				</div>
 			{/if}
 		</div>

@@ -10,12 +10,18 @@
 		message,
 		selectedStepId = null,
 		compact = false,
-		onselect
+		graphOpen = false,
+		onselect,
+		ongraph
 	}: {
 		message: AssistantMessage;
 		selectedStepId?: string | null;
 		compact?: boolean;
+		/** Whether this message's dependency graph is the one open. */
+		graphOpen?: boolean;
 		onselect: (stepId: string) => void;
+		/** Open (or close) the lemma dependency graph of this message's Lean. */
+		ongraph?: () => void;
 	} = $props();
 
 	const last = $derived(message.steps.length - 1);
@@ -26,6 +32,26 @@
 <div class="space-y-3">
 	<div class="flex flex-wrap items-center gap-x-3 gap-y-1 {compact ? 'pl-9' : 'pl-11'}">
 		<StatusBadge status={message.status} />
+		{#if message.lean && ongraph}
+			<button
+				type="button"
+				onclick={ongraph}
+				aria-pressed={graphOpen}
+				title="Show the theorems this proof relies on, down to the axioms"
+				class="flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium transition
+				{graphOpen
+					? 'border-accent bg-accent text-white'
+					: 'border-line-strong text-ink-2 hover:border-accent hover:text-accent'}"
+			>
+				<svg viewBox="0 0 20 20" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+					<circle cx="10" cy="4" r="2" />
+					<circle cx="4.5" cy="15.5" r="2" />
+					<circle cx="15.5" cy="15.5" r="2" />
+					<path d="M9 5.8 5.5 13.6M11 5.8l3.5 7.8" stroke-linecap="round" />
+				</svg>
+				Dependency graph
+			</button>
+		{/if}
 		{#if message.intro && !compact}
 			<p class="text-sm text-ink-2">{message.intro}</p>
 		{/if}

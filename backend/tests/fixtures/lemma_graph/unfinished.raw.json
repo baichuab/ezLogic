@@ -1,0 +1,155 @@
+{
+ "params": {
+  "depth": 2,
+  "max_nodes": 40
+ },
+ "meta": {
+  "axioms": [],
+  "lean_version": "4.35.0",
+  "nodes": [
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "fine",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     1,
+     1
+    ],
+    "statement": "∀ (a b : ℕ), a + b = b + a",
+    "truncated": false,
+    "uses": [
+     "Nat.add_comm"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Nat.add_comm",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n m : ℕ), n + m = m + n",
+    "truncated": false,
+    "uses": [
+     "Nat.succ_add",
+     "Nat.zero_add"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.succ_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n m : ℕ), n.succ + m = (n + m).succ",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.zero_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n : ℕ), 0 + n = n",
+    "truncated": false,
+    "uses": []
+   }
+  ]
+ },
+ "example_meta": {
+  "axioms": [],
+  "lean_version": "4.35.0",
+  "nodes": [
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "«example@3»",
+    "kind": "virtual",
+    "local": false,
+    "module": null,
+    "range": null,
+    "statement": null,
+    "truncated": false,
+    "uses": [
+     "Nat.add_zero"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Nat.add_zero",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Core",
+    "range": null,
+    "statement": "∀ (n : ℕ), n + 0 = n",
+    "truncated": false,
+    "uses": []
+   }
+  ]
+ },
+ "messages": [
+  {
+   "start_pos": {
+    "line": 7,
+    "column": 0
+   },
+   "end_pos": {
+    "line": 7,
+    "column": 0
+   },
+   "severity": "error",
+   "data": "unterminated comment"
+  }
+ ],
+ "tactics": [
+  {
+   "start_pos": {
+    "line": 4,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 4,
+    "column": 19
+   },
+   "goals": "n : ℕ\n⊢ n + 0 = n",
+   "tactic": "<failed to pretty print>",
+   "proof_state": 14,
+   "used_constants": [
+    "Eq.mpr",
+    "congrArg",
+    "id",
+    "instOfNatNat",
+    "instHAdd",
+    "HAdd.hAdd",
+    "Nat",
+    "instAddNat",
+    "Eq.refl",
+    "Nat.add_zero",
+    "OfNat.ofNat",
+    "Eq"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,414 @@
+{
+ "params": {
+  "depth": 2,
+  "max_nodes": 40
+ },
+ "meta": {
+  "axioms": [
+   {
+    "id": "propext",
+    "module": "Init.Core",
+    "statement": "∀ {a b : Prop}, (a ↔ b) → a = b"
+   }
+  ],
+  "lean_version": "4.35.0",
+  "nodes": [
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "and_left",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     19,
+     19
+    ],
+    "statement": "∀ (p q : Prop), p ∧ q → p",
+    "truncated": false,
+    "uses": [
+     "And.left"
+    ]
+   },
+   {
+    "axioms": [
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "double_eq",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     5,
+     7
+    ],
+    "statement": "∀ (n : ℕ), double n = n + n",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "double_mono",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     9,
+     11
+    ],
+    "statement": "∀ {a b : ℕ}, a ≤ b → double a ≤ double b",
+    "truncated": false,
+    "uses": [
+     "Nat.add_le_add",
+     "double_eq"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "And.left",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Prelude",
+    "range": null,
+    "statement": "∀ {a b : Prop}, a ∧ b → a",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Nat.add_le_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ {a b c d : ℕ}, a ≤ b → c ≤ d → a + c ≤ b + d",
+    "truncated": false,
+    "uses": [
+     "Nat.add_le_add_left",
+     "Nat.add_le_add_right",
+     "Nat.le_trans"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.add_le_add_left",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ {n m : ℕ}, n ≤ m → ∀ (k : ℕ), k + n ≤ k + m",
+    "truncated": true,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.add_le_add_right",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ {n m : ℕ}, n ≤ m → ∀ (k : ℕ), n + k ≤ m + k",
+    "truncated": true,
+    "uses": [
+     "Nat.add_le_add_left"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.le_trans",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Prelude",
+    "range": null,
+    "statement": "∀ {n m k : ℕ}, n ≤ m → m ≤ k → n ≤ k",
+    "truncated": false,
+    "uses": []
+   }
+  ]
+ },
+ "example_meta": {
+  "axioms": [],
+  "lean_version": "4.35.0",
+  "nodes": [
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "«example@13»",
+    "kind": "virtual",
+    "local": false,
+    "module": null,
+    "range": null,
+    "statement": null,
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "«example@15»",
+    "kind": "virtual",
+    "local": false,
+    "module": null,
+    "range": null,
+    "statement": null,
+    "truncated": false,
+    "uses": [
+     "Nat.le_add_right"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Nat.le_add_right",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n k : ℕ), n ≤ n + k",
+    "truncated": false,
+    "uses": [
+     "Nat.le_refl",
+     "Nat.le_succ_of_le"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.le_refl",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Prelude",
+    "range": null,
+    "statement": "∀ (n : ℕ), n ≤ n",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.le_succ_of_le",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Prelude",
+    "range": null,
+    "statement": "∀ {n m : ℕ}, n ≤ m → n ≤ m.succ",
+    "truncated": false,
+    "uses": []
+   }
+  ]
+ },
+ "messages": [],
+ "tactics": [
+  {
+   "start_pos": {
+    "line": 6,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 6,
+    "column": 15
+   },
+   "goals": "n : ℕ\n⊢ double n = n + n",
+   "tactic": "unfold double",
+   "proof_state": 8,
+   "used_constants": [
+    "id",
+    "instHAdd",
+    "double",
+    "HAdd.hAdd",
+    "Nat",
+    "instAddNat",
+    "Eq"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 7,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 7,
+    "column": 6
+   },
+   "goals": "n : ℕ\n⊢ 2 * n = n + n",
+   "tactic": "ring",
+   "proof_state": 9,
+   "used_constants": [
+    "Eq.mpr",
+    "NonAssocSemiring.toAddCommMonoidWithOne",
+    "Mathlib.Meta.NormNum.isNat_add",
+    "Mathlib.Tactic.Ring.Common.mul_congr",
+    "HMul.hMul",
+    "Mathlib.Tactic.Ring.Common.add_pf_add_overlap",
+    "Nat.rawCast",
+    "congrArg",
+    "CommSemiring.toSemiring",
+    "Mathlib.Meta.NormNum.IsNat.of_raw",
+    "Mathlib.Tactic.Ring.Common.add_congr",
+    "id",
+    "Distrib.toAdd",
+    "instMulNat",
+    "instOfNatNat",
+    "AddCommMonoidWithOne.toAddMonoidWithOne",
+    "Mathlib.Meta.NormNum.isNat_ofNat",
+    "Mathlib.Tactic.Ring.of_eq",
+    "Nat.instAddMonoidWithOne",
+    "NPow.toPow",
+    "instDistribOfSemiring",
+    "Mathlib.Tactic.Ring.Common.mul_zero",
+    "instHAdd",
+    "HPow.hPow",
+    "Distrib.toMul",
+    "HAdd.hAdd",
+    "Mathlib.Tactic.Ring.Common.mul_pf_right",
+    "Mathlib.Tactic.Ring.Common.add_mul",
+    "Nat",
+    "Nat.instCommSemiring",
+    "Mathlib.Tactic.Ring.Common.atom_pf",
+    "Semiring.toMonoid",
+    "Mathlib.Meta.NormNum.isNat_mul",
+    "instAddNat",
+    "Zero.toOfNat0",
+    "Eq.refl",
+    "instHPow",
+    "Mathlib.Tactic.Ring.cast_pos",
+    "Mathlib.Tactic.Ring.Common.add_pf_zero_add",
+    "OfNat.ofNat",
+    "Eq.symm",
+    "Mathlib.Tactic.Ring.Common.zero_mul",
+    "Mathlib.Tactic.Ring.Common.add_overlap_pf",
+    "Semiring.toNonAssocSemiring",
+    "Eq",
+    "Mathlib.Tactic.Ring.Common.add_pf_add_zero",
+    "Monoid.toNPow",
+    "Mathlib.Tactic.Ring.Common.mul_add",
+    "rfl",
+    "Mathlib.Meta.NormNum.IsNat.to_raw_eq",
+    "MulZeroClass.toZero",
+    "instMulZeroClassOfSemiring",
+    "instHMul"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 10,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 10,
+    "column": 27
+   },
+   "goals": "a b : ℕ\nh : a ≤ b\n⊢ double a ≤ double b",
+   "tactic": "rw [double_eq, double_eq]",
+   "proof_state": 10,
+   "used_constants": [
+    "Eq.mpr",
+    "congrArg",
+    "id",
+    "LE.le",
+    "instLENat",
+    "instHAdd",
+    "double",
+    "HAdd.hAdd",
+    "Nat",
+    "instAddNat",
+    "double_eq",
+    "Eq"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 11,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 11,
+    "column": 26
+   },
+   "goals": "a b : ℕ\nh : a ≤ b\n⊢ a + a ≤ b + b",
+   "tactic": "exact Nat.add_le_add h h",
+   "proof_state": 11,
+   "used_constants": [
+    "Nat.add_le_add"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 16,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 16,
+    "column": 16
+   },
+   "goals": "a : ℕ\n⊢ a ≤ double a",
+   "tactic": "rw [double_eq]",
+   "proof_state": 12,
+   "used_constants": [
+    "Eq.mpr",
+    "congrArg",
+    "id",
+    "LE.le",
+    "instLENat",
+    "instHAdd",
+    "double",
+    "HAdd.hAdd",
+    "Nat",
+    "instAddNat",
+    "double_eq",
+    "Eq"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 17,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 17,
+    "column": 28
+   },
+   "goals": "a : ℕ\n⊢ a ≤ a + a",
+   "tactic": "exact Nat.le_add_right a a",
+   "proof_state": 13,
+   "used_constants": [
+    "Nat.le_add_right"
+   ]
+  }
+ ]
+}

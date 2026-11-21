@@ -1,0 +1,822 @@
+{
+ "params": {
+  "depth": 2,
+  "max_nodes": 40
+ },
+ "meta": {
+  "axioms": [
+   {
+    "id": "Classical.choice",
+    "module": "Init.Prelude",
+    "statement": "{α : Sort u} → Nonempty α → α"
+   },
+   {
+    "id": "Quot.sound",
+    "module": "Init.Prelude",
+    "statement": "∀ {α : Sort u} {r : α → α → Prop} {a b : α}, r a b → Quot.mk r a = Quot.mk r b"
+   },
+   {
+    "id": "propext",
+    "module": "Init.Core",
+    "statement": "∀ {a b : Prop}, (a ↔ b) → a = b"
+   },
+   {
+    "id": "sorryAx",
+    "module": "Init.Prelude",
+    "statement": "(α : Sort u) → Bool → α"
+   }
+  ],
+  "lean_version": "4.35.0",
+  "nodes": [
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "_private.0.priv_thm",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     16,
+     16
+    ],
+    "statement": "∀ (p q : Prop), p → q → p ∧ q",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [
+     "sorryAx"
+    ],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [
+     "sorryAx"
+    ],
+    "id": "broken",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     10,
+     12
+    ],
+    "statement": "∀ (a : ℕ), a + 1 > a",
+    "truncated": false,
+    "uses": [
+     "Nat.add_comm"
+    ]
+   },
+   {
+    "axioms": [
+     "Classical.choice",
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "double_sum",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     3,
+     6
+    ],
+    "statement": "∀ (n : ℕ), 2 * (Finset.range (n + 1)).sum id = n * (n + 1)",
+    "truncated": false,
+    "uses": [
+     "Distrib.left_distrib",
+     "Finset.sum_range_succ",
+     "Finset.sum_singleton",
+     "MulZeroClass.mul_zero",
+     "mul_add",
+     "mul_one",
+     "zero_add"
+    ]
+   },
+   {
+    "axioms": [
+     "Classical.choice",
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "uses_local",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     8,
+     8
+    ],
+    "statement": "∀ (n : ℕ), n * (n + 1) = 2 * (Finset.range (n + 1)).sum id",
+    "truncated": false,
+    "uses": [
+     "double_sum"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Nat.add_comm",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n m : ℕ), n + m = m + n",
+    "truncated": false,
+    "uses": [
+     "Nat.succ_add",
+     "Nat.zero_add"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": true,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Distrib.left_distrib",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Ring.Defs",
+    "range": null,
+    "statement": "∀ {R : Type u_1} [self : Distrib R] (a b c : R), a * (b + c) = a * b + a * c",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [
+     "Classical.choice",
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Finset.sum_range_succ",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.BigOperators.Group.Finset.Basic",
+    "range": null,
+    "statement": "∀ {M : Type u_4} [inst : AddCommMonoid M] (f : ℕ → M) (n : ℕ),\n  ∑ x ∈ Finset.range (n + 1), f x = ∑ x ∈ Finset.range n, f x + f n",
+    "truncated": false,
+    "uses": [
+     "Finset.sum_range_succ_comm",
+     "add_comm"
+    ]
+   },
+   {
+    "axioms": [
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Finset.sum_singleton",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.BigOperators.Group.Finset.Basic",
+    "range": null,
+    "statement": "∀ {ι : Type u_1} {M : Type u_4} [inst : AddCommMonoid M] (f : ι → M) (a : ι), ∑ x ∈ {a}, f x = f a",
+    "truncated": false,
+    "uses": [
+     "Finset.fold_singleton",
+     "add_assoc",
+     "add_comm",
+     "add_zero"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": true,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "MulZeroClass.mul_zero",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.GroupWithZero.Defs",
+    "range": null,
+    "statement": "∀ {M₀ : Type u} [self : MulZeroClass M₀] (a : M₀), a * 0 = 0",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "mul_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Ring.Defs",
+    "range": null,
+    "statement": "∀ {R : Type v} [inst : Mul R] [inst_1 : Add R] [LeftDistribClass R] (a b c : R), a * (b + c) = a * b + a * c",
+    "truncated": false,
+    "uses": [
+     "left_distrib"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "mul_one",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Monoid",
+    "range": null,
+    "statement": "∀ {M : Type u_2} [inst : MulOneClass M] (a : M), a * 1 = a",
+    "truncated": false,
+    "uses": [
+     "MulOneClass.mul_one"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "zero_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Monoid",
+    "range": null,
+    "statement": "∀ {M : Type u_2} [inst : AddZeroClass M] (a : M), 0 + a = a",
+    "truncated": false,
+    "uses": [
+     "AddZeroClass.zero_add"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.succ_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n m : ℕ), n.succ + m = (n + m).succ",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.zero_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n : ℕ), 0 + n = n",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [
+     "Classical.choice",
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Finset.sum_range_succ_comm",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.BigOperators.Group.Finset.Basic",
+    "range": null,
+    "statement": "∀ {M : Type u_4} [inst : AddCommMonoid M] (f : ℕ → M) (n : ℕ),\n  ∑ x ∈ Finset.range (n + 1), f x = f n + ∑ x ∈ Finset.range n, f x",
+    "truncated": true,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "add_comm",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Semigroup",
+    "range": null,
+    "statement": "∀ {G : Type u_1} [inst : AddCommMagma G] (a b : G), a + b = b + a",
+    "truncated": true,
+    "uses": []
+   },
+   {
+    "axioms": [
+     "Quot.sound",
+     "propext"
+    ],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Finset.fold_singleton",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Data.Finset.Fold",
+    "range": null,
+    "statement": "∀ {α : Type u_1} {β : Type u_2} {op : β → β → β} [hc : Std.Commutative op] [ha : Std.Associative op] {f : α → β} {b : β}\n  {a : α}, Finset.fold op b f {a} = op (f a) b",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "add_assoc",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Semigroup",
+    "range": null,
+    "statement": "∀ {G : Type u_1} [inst : AddSemigroup G] (a b c : G), a + b + c = a + (b + c)",
+    "truncated": true,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "add_zero",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Monoid",
+    "range": null,
+    "statement": "∀ {M : Type u_2} [inst : AddZeroClass M] (a : M), a + 0 = a",
+    "truncated": true,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "left_distrib",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Ring.Defs",
+    "range": null,
+    "statement": "∀ {R : Type v} [inst : Mul R] [inst_1 : Add R] [LeftDistribClass R] (a b c : R), a * (b + c) = a * b + a * c",
+    "truncated": true,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": true,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "MulOneClass.mul_one",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Monoid",
+    "range": null,
+    "statement": "∀ {M : Type u_2} [self : MulOneClass M] (a : M), a * 1 = a",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": true,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "AddZeroClass.zero_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Mathlib.Algebra.Group.Monoid",
+    "range": null,
+    "statement": "∀ {M : Type u_2} [self : AddZeroClass M] (a : M), 0 + a = a",
+    "truncated": false,
+    "uses": []
+   }
+  ]
+ },
+ "example_meta": {
+  "axioms": [],
+  "lean_version": "4.35.0",
+  "nodes": [
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "«example@14»",
+    "kind": "virtual",
+    "local": false,
+    "module": null,
+    "range": null,
+    "statement": null,
+    "truncated": false,
+    "uses": [
+     "Nat.add_comm"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Nat.add_comm",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n m : ℕ), n + m = m + n",
+    "truncated": false,
+    "uses": [
+     "Nat.succ_add",
+     "Nat.zero_add"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.succ_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n m : ℕ), n.succ + m = (n + m).succ",
+    "truncated": false,
+    "uses": []
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 2,
+    "direct_axioms": [],
+    "id": "Nat.zero_add",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Data.Nat.Basic",
+    "range": null,
+    "statement": "∀ (n : ℕ), 0 + n = n",
+    "truncated": false,
+    "uses": []
+   }
+  ]
+ },
+ "messages": [
+  {
+   "start_pos": {
+    "line": 12,
+    "column": 8
+   },
+   "end_pos": {
+    "line": 12,
+    "column": 25
+   },
+   "severity": "error",
+   "data": "Unknown identifier `nonexistent_lemma`"
+  }
+ ],
+ "tactics": [
+  {
+   "start_pos": {
+    "line": 4,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 6,
+    "column": 73
+   },
+   "goals": "n : ℕ\n⊢ 2 * (Finset.range (n + 1)).sum id = n * (n + 1)",
+   "tactic": "induction n with\n| zero => simp\n| succ k ih => rw [Finset.sum_range_succ, mul_add, ih]; simp [id]; ring",
+   "proof_state": 0,
+   "used_constants": [
+    "Nat.instMulZeroClass",
+    "Nat.recAux",
+    "HMul.hMul",
+    "congrArg",
+    "Finset",
+    "AddMonoid.toAddZeroClass",
+    "Nat.instMulOneClass",
+    "Nat.instAddMonoid",
+    "id",
+    "instMulNat",
+    "instOfNatNat",
+    "zero_add",
+    "MulZeroClass.mul_zero",
+    "Finset.sum_singleton",
+    "Finset.range",
+    "instHAdd",
+    "HAdd.hAdd",
+    "Nat",
+    "congr",
+    "True",
+    "eq_self",
+    "of_eq_true",
+    "instAddNat",
+    "Nat.instAddCommMonoid",
+    "Zero.toOfNat0",
+    "congrFun'",
+    "mul_one",
+    "Finset.instSingleton",
+    "Singleton.singleton",
+    "OfNat.ofNat",
+    "Eq",
+    "Finset.sum",
+    "Eq.trans",
+    "MulZeroClass.toZero",
+    "instHMul"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 5,
+    "column": 12
+   },
+   "end_pos": {
+    "line": 5,
+    "column": 16
+   },
+   "goals": "case zero\n⊢ 2 * (Finset.range (0 + 1)).sum id = 0 * (0 + 1)",
+   "tactic": "simp",
+   "proof_state": 1,
+   "used_constants": [
+    "Nat.instMulZeroClass",
+    "HMul.hMul",
+    "congrArg",
+    "Finset",
+    "AddMonoid.toAddZeroClass",
+    "Nat.instMulOneClass",
+    "Nat.instAddMonoid",
+    "id",
+    "instMulNat",
+    "instOfNatNat",
+    "zero_add",
+    "MulZeroClass.mul_zero",
+    "Finset.sum_singleton",
+    "Finset.range",
+    "instHAdd",
+    "HAdd.hAdd",
+    "Nat",
+    "congr",
+    "True",
+    "eq_self",
+    "of_eq_true",
+    "instAddNat",
+    "Nat.instAddCommMonoid",
+    "Zero.toOfNat0",
+    "congrFun'",
+    "mul_one",
+    "Finset.instSingleton",
+    "Singleton.singleton",
+    "OfNat.ofNat",
+    "Eq",
+    "Finset.sum",
+    "Eq.trans",
+    "MulZeroClass.toZero",
+    "instHMul"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 6,
+    "column": 17
+   },
+   "end_pos": {
+    "line": 6,
+    "column": 56
+   },
+   "goals": "case succ\nk : ℕ\nih : 2 * (Finset.range (k + 1)).sum id = k * (k + 1)\n⊢ 2 * (Finset.range (k + 1 + 1)).sum id = (k + 1) * (k + 1 + 1)",
+   "tactic": "rw [Finset.sum_range_succ, mul_add, ih]",
+   "proof_state": 2,
+   "used_constants": [
+    "Distrib.leftDistribClass",
+    "Eq.mpr",
+    "HMul.hMul",
+    "congrArg",
+    "AddMonoid.toAddZeroClass",
+    "AddZeroClass.toAddZero",
+    "id",
+    "instMulNat",
+    "instOfNatNat",
+    "Finset.range",
+    "instHAdd",
+    "HAdd.hAdd",
+    "Nat",
+    "Nat.instDistrib",
+    "instAddNat",
+    "Nat.instAddCommMonoid",
+    "AddZero.toAdd",
+    "mul_add",
+    "AddCommMonoid.toAddMonoid",
+    "OfNat.ofNat",
+    "Eq",
+    "Finset.sum_range_succ",
+    "Finset.sum",
+    "instHMul"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 6,
+    "column": 58
+   },
+   "end_pos": {
+    "line": 6,
+    "column": 67
+   },
+   "goals": "case succ\nk : ℕ\nih : 2 * (Finset.range (k + 1)).sum id = k * (k + 1)\n⊢ k * (k + 1) + 2 * id (k + 1) = (k + 1) * (k + 1 + 1)",
+   "tactic": "simp [id]",
+   "proof_state": 3,
+   "used_constants": [
+    "HMul.hMul",
+    "AddMonoid.toAddZeroClass",
+    "AddZeroClass.toAddZero",
+    "id",
+    "instMulNat",
+    "instOfNatNat",
+    "instHAdd",
+    "HAdd.hAdd",
+    "Nat",
+    "instAddNat",
+    "Nat.instAddCommMonoid",
+    "AddZero.toAdd",
+    "AddCommMonoid.toAddMonoid",
+    "OfNat.ofNat",
+    "Eq",
+    "instHMul"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 6,
+    "column": 69
+   },
+   "end_pos": {
+    "line": 6,
+    "column": 73
+   },
+   "goals": "case succ\nk : ℕ\nih : 2 * (Finset.range (k + 1)).sum id = k * (k + 1)\n⊢ k * (k + 1) + 2 * (k + 1) = (k + 1) * (k + 1 + 1)",
+   "tactic": "ring",
+   "proof_state": 4,
+   "used_constants": [
+    "Mathlib.Tactic.Ring.Common.mul_pf_left",
+    "Eq.mpr",
+    "NonAssocSemiring.toAddCommMonoidWithOne",
+    "Mathlib.Meta.NormNum.isNat_add",
+    "Mathlib.Tactic.Ring.Common.mul_congr",
+    "HMul.hMul",
+    "Mathlib.Tactic.Ring.Common.add_pf_add_overlap",
+    "Nat.rawCast",
+    "congrArg",
+    "CommSemiring.toSemiring",
+    "AddMonoid.toAddZeroClass",
+    "Mathlib.Meta.NormNum.IsNat.of_raw",
+    "AddZeroClass.toAddZero",
+    "Mathlib.Tactic.Ring.Common.add_pf_add_gt",
+    "Mathlib.Tactic.Ring.Common.add_congr",
+    "id",
+    "Distrib.toAdd",
+    "instMulNat",
+    "instOfNatNat",
+    "AddCommMonoidWithOne.toAddMonoidWithOne",
+    "Mathlib.Meta.NormNum.isNat_ofNat",
+    "Mathlib.Tactic.Ring.of_eq",
+    "Nat.instAddMonoidWithOne",
+    "NPow.toPow",
+    "instDistribOfSemiring",
+    "Mathlib.Tactic.Ring.Common.mul_zero",
+    "instHAdd",
+    "HPow.hPow",
+    "Distrib.toMul",
+    "HAdd.hAdd",
+    "Mathlib.Tactic.Ring.Common.mul_pf_right",
+    "Mathlib.Tactic.Ring.Common.add_mul",
+    "Nat",
+    "Nat.instCommSemiring",
+    "Mathlib.Tactic.Ring.Common.atom_pf",
+    "Semiring.toMonoid",
+    "Mathlib.Meta.NormNum.isNat_mul",
+    "instAddNat",
+    "Nat.instAddCommMonoid",
+    "Mathlib.Tactic.Ring.Common.add_pf_add_lt",
+    "AddZero.toAdd",
+    "Zero.toOfNat0",
+    "Eq.refl",
+    "AddCommMonoid.toAddMonoid",
+    "instHPow",
+    "Mathlib.Tactic.Ring.cast_pos",
+    "Mathlib.Tactic.Ring.Common.add_pf_zero_add",
+    "OfNat.ofNat",
+    "Eq.symm",
+    "Mathlib.Tactic.Ring.Common.zero_mul",
+    "Mathlib.Tactic.Ring.Common.add_overlap_pf",
+    "Semiring.toNonAssocSemiring",
+    "Eq",
+    "Mathlib.Tactic.Ring.Common.add_pf_add_zero",
+    "Monoid.toNPow",
+    "Mathlib.Tactic.Ring.Common.mul_add",
+    "rfl",
+    "Mathlib.Meta.NormNum.IsNat.to_raw_eq",
+    "MulZeroClass.toZero",
+    "instMulZeroClassOfSemiring",
+    "instHMul",
+    "Mathlib.Tactic.Ring.Common.mul_pp_pf_overlap"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 11,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 11,
+    "column": 19
+   },
+   "goals": "a : ℕ\n⊢ a + 1 > a",
+   "tactic": "rw [Nat.add_comm]",
+   "proof_state": 5,
+   "used_constants": [
+    "Eq.mpr",
+    "congrArg",
+    "id",
+    "instOfNatNat",
+    "GT.gt",
+    "instHAdd",
+    "HAdd.hAdd",
+    "Nat",
+    "instAddNat",
+    "instLTNat",
+    "OfNat.ofNat",
+    "Eq",
+    "Nat.add_comm"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 12,
+    "column": 2
+   },
+   "end_pos": {
+    "line": 12,
+    "column": 27
+   },
+   "goals": "a : ℕ\n⊢ 1 + a > a",
+   "tactic": "exact nonexistent_lemma a",
+   "proof_state": 6,
+   "used_constants": [
+    "Unit.unit",
+    "sorryAx",
+    "instOfNatNat",
+    "Lean.Name.num",
+    "Lean.Name.str",
+    "Lean.Name.anonymous",
+    "Bool.true",
+    "GT.gt",
+    "instHAdd",
+    "Unit",
+    "HAdd.hAdd",
+    "Nat",
+    "Function.const",
+    "instAddNat",
+    "Lean.Name",
+    "instLTNat",
+    "OfNat.ofNat"
+   ]
+  },
+  {
+   "start_pos": {
+    "line": 14,
+    "column": 40
+   },
+   "end_pos": {
+    "line": 14,
+    "column": 57
+   },
+   "goals": "a b : ℕ\n⊢ a + b = b + a",
+   "tactic": "rw [Nat.add_comm]",
+   "proof_state": 7,
+   "used_constants": [
+    "Eq.mpr",
+    "congrArg",
+    "id",
+    "instHAdd",
+    "HAdd.hAdd",
+    "Nat",
+    "instAddNat",
+    "Eq.refl",
+    "Eq",
+    "Nat.add_comm"
+   ]
+  }
+ ]
+}

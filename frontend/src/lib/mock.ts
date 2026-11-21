@@ -1,4 +1,13 @@
-import type { AgentEvent, AssistantMessage, Chat, ProofStep, ToolCall } from './types';
+import type {
+	AgentEvent,
+	AssistantMessage,
+	Chat,
+	LemmaEdge,
+	LemmaGraph,
+	LemmaNode,
+	ProofStep,
+	ToolCall
+} from './types';
 
 export const GAUSS_LEAN = `import Mathlib
 
@@ -214,4 +223,250 @@ export function mockEvents(userText = ''): MockStep[] {
 			delay
 		}
 	];
+}
+
+// ---------------------------------------------------------------------------
+// Lemma dependency graph (mock `POST /api/lemma-graph`)
+//
+// The chain below GAUSS_LEAN's theorem, as the backend reports it (names, modules and links taken
+// from real Lean output). `mockLemmaGraph` / `mockExpandLemmaGraph` cut it at a depth the way the
+// backend does, so expanding truncated nodes works in mock mode too.
+
+const BIG_OPS = 'Mathlib.Algebra.BigOperators.Group.Finset.Basic';
+const CQP = ['Classical.choice', 'Quot.sound', 'propext'];
+
+interface MockLemma {
+	module: string;
+	statement: string;
+	uses: string[];
+	axioms: string[];
+	classField?: boolean;
+}
+
+const MOCK_LEMMAS: Record<string, MockLemma> = {
+	'Finset.sum_range_succ': {
+		module: BIG_OPS,
+		statement: '∀ {M : Type u_4} [inst : AddCommMonoid M] (f : ℕ → M) (n : ℕ), ∑ x ∈ Finset.range (n + 1), f x = ∑ x ∈ Finset.range n, f x + f n',
+		uses: ['Finset.sum_range_succ_comm', 'add_comm'],
+		axioms: CQP
+	},
+	'Finset.sum_range_succ_comm': {
+		module: BIG_OPS,
+		statement: '∀ {M : Type u_4} [inst : AddCommMonoid M] (f : ℕ → M) (n : ℕ), ∑ x ∈ Finset.range (n + 1), f x = f n + ∑ x ∈ Finset.range n, f x',
+		uses: ['Finset.notMem_range_self', 'Finset.range_add_one', 'Finset.sum_insert'],
+		axioms: CQP
+	},
+	'Finset.sum_insert': {
+		module: BIG_OPS,
+		statement: '∀ {β : Type u} {α : Type v} {s : Finset α} {a : α} {f : α → β} [inst : AddCommMonoid β] [inst_1 : DecidableEq α], a ∉ s → ∑ x ∈ insert a s, f x = f a + ∑ x ∈ s, f x',
+		uses: ['Finset.fold_insert', 'add_assoc', 'add_comm'],
+		axioms: CQP
+	},
+	'Finset.fold_insert': {
+		module: 'Mathlib.Data.Finset.Fold',
+		statement: '∀ {α : Type u_1} {β : Type u_2} {op : β → β → β} [hc : Std.Commutative op] [ha : Std.Associative op] {f : α → β} {b : β} {s : Finset α} {a : α} [inst : DecidableEq α], a ∉ s → Finset.fold op b f (insert a s) = op (f a) (Finset.fold op b f s)',
+		uses: [],
+		axioms: CQP
+	},
+	'Finset.notMem_range_self': {
+		module: 'Mathlib.Data.Finset.Range',
+		statement: '∀ {n : ℕ}, n ∉ Finset.range n',
+		uses: [],
+		axioms: CQP
+	},
+	'Finset.range_add_one': {
+		module: 'Mathlib.Data.Finset.Range',
+		statement: '∀ {n : ℕ}, Finset.range (n + 1) = insert n (Finset.range n)',
+		uses: [],
+		axioms: CQP
+	},
+	'Finset.sum_range_zero': {
+		module: BIG_OPS,
+		statement: '∀ {M : Type u_4} [inst : AddCommMonoid M] (f : ℕ → M), ∑ k ∈ Finset.range 0, f k = 0',
+		uses: ['Finset.range_zero', 'Finset.sum_empty'],
+		axioms: ['Quot.sound', 'propext']
+	},
+	'Finset.range_zero': {
+		module: 'Mathlib.Data.Finset.Range',
+		statement: 'Finset.range 0 = ∅',
+		uses: [],
+		axioms: []
+	},
+	'Finset.sum_empty': {
+		module: BIG_OPS,
+		statement: '∀ {β : Type u} {α : Type v} [inst : AddCommMonoid β] {f : α → β}, ∑ x ∈ ∅, f x = 0',
+		uses: [],
+		axioms: ['Quot.sound']
+	},
+	mul_add: {
+		module: 'Mathlib.Algebra.Ring.Defs',
+		statement: '∀ {R : Type x} [inst : Mul R] [inst_1 : Add R] [inst_2 : LeftDistribClass R] (a b c : R), a * (b + c) = a * b + a * c',
+		uses: ['left_distrib'],
+		axioms: []
+	},
+	left_distrib: {
+		module: 'Mathlib.Algebra.Ring.Defs',
+		statement: '∀ {R : Type x} [inst : Mul R] [inst_1 : Add R] [inst_2 : LeftDistribClass R] (a b c : R), a * (b + c) = a * b + a * c',
+		uses: ['LeftDistribClass.left_distrib'],
+		axioms: []
+	},
+	'LeftDistribClass.left_distrib': {
+		module: 'Mathlib.Algebra.Ring.Defs',
+		statement: '∀ {R : Type u_1} {inst : Mul R} {inst_1 : Add R} [self : LeftDistribClass R] (a b c : R), a * (b + c) = a * b + a * c',
+		uses: [],
+		axioms: [],
+		classField: true
+	},
+	add_comm: {
+		module: 'Mathlib.Algebra.Group.Semigroup',
+		statement: '∀ {G : Type u_1} [inst : AddCommMagma G] (a b : G), a + b = b + a',
+		uses: ['AddCommMagma.add_comm'],
+		axioms: []
+	},
+	'AddCommMagma.add_comm': {
+		module: 'Mathlib.Algebra.Group.Semigroup',
+		statement: '∀ {G : Type u} [self : AddCommMagma G] (a b : G), a + b = b + a',
+		uses: [],
+		axioms: [],
+		classField: true
+	},
+	add_assoc: {
+		module: 'Mathlib.Algebra.Group.Semigroup',
+		statement: '∀ {G : Type u_1} [inst : AddSemigroup G] (a b c : G), a + b + c = a + (b + c)',
+		uses: ['AddSemigroup.add_assoc'],
+		axioms: []
+	},
+	'AddSemigroup.add_assoc': {
+		module: 'Mathlib.Algebra.Group.Semigroup',
+		statement: '∀ {G : Type u} [self : AddSemigroup G] (a b c : G), a + b + c = a + (b + c)',
+		uses: [],
+		axioms: [],
+		classField: true
+	},
+	'MulZeroClass.mul_zero': {
+		module: 'Mathlib.Algebra.GroupWithZero.Defs',
+		statement: '∀ {M₀ : Type u} [self : MulZeroClass M₀] (a : M₀), a * 0 = 0',
+		uses: [],
+		axioms: [],
+		classField: true
+	},
+	zero_add: {
+		module: 'Mathlib.Algebra.Group.Defs',
+		statement: '∀ {M : Type u} [inst : AddZeroClass M] (a : M), 0 + a = a',
+		uses: ['AddZeroClass.zero_add'],
+		axioms: []
+	},
+	'AddZeroClass.zero_add': {
+		module: 'Mathlib.Algebra.Group.Defs',
+		statement: '∀ {M : Type u} [self : AddZeroClass M] (a : M), 0 + a = a',
+		uses: [],
+		axioms: [],
+		classField: true
+	}
+};
+
+const MOCK_AXIOMS: Record<string, string> = {
+	'Classical.choice': '{α : Sort u} → Nonempty α → α',
+	'Quot.sound': '∀ {α : Sort u} {r : α → α → Prop} {a b : α}, r a b → Quot.mk r a = Quot.mk r b',
+	propext: '∀ {a b : Prop}, (a ↔ b) → a = b'
+};
+
+const MOCK_ROOT = 'two_mul_sum_range';
+const MOCK_ROOT_LEMMA: MockLemma = {
+	module: '',
+	statement: '∀ (n : ℕ), 2 * ∑ i ∈ Finset.range (n + 1), i = n * (n + 1)',
+	uses: ['Finset.sum_range_succ', 'Finset.sum_range_zero', 'MulZeroClass.mul_zero', 'mul_add', 'zero_add'],
+	axioms: CQP
+};
+
+/** Breadth-first from `roots` to `depth`, like backend/lemma_graph's metaprogram and builder. */
+function mockGraphFrom(roots: string[], depth: number): LemmaGraph {
+	const lemma = (id: string) => (id === MOCK_ROOT ? MOCK_ROOT_LEMMA : MOCK_LEMMAS[id]);
+	const depthOf = new Map<string, number>();
+	const order: string[] = [];
+	const truncated = new Set<string>();
+	for (const r of roots) {
+		if (!lemma(r) || depthOf.has(r)) continue;
+		depthOf.set(r, 0);
+		order.push(r);
+	}
+	for (let i = 0; i < order.length; i++) {
+		const id = order[i];
+		const d = depthOf.get(id)!;
+		const uses = lemma(id).uses;
+		if (!uses.length) continue;
+		if (d > 0 && d >= depth) {
+			truncated.add(id);
+			continue;
+		}
+		for (const u of uses) {
+			if (depthOf.has(u)) continue;
+			depthOf.set(u, d + 1);
+			order.push(u);
+		}
+	}
+	const shown = (id: string) => (truncated.has(id) ? [] : lemma(id).uses.filter((u) => depthOf.has(u)));
+	const edges: LemmaEdge[] = [];
+	const usedAxioms = new Set<string>();
+	const nodes: LemmaNode[] = order.map((id) => {
+		const l = lemma(id);
+		const local = id === MOCK_ROOT;
+		for (const u of shown(id)) edges.push({ src: id, dst: u, kind: 'uses' });
+		const covered = new Set(shown(id).flatMap((u) => lemma(u).axioms));
+		for (const a of l.axioms.filter((a) => !covered.has(a))) {
+			edges.push({ src: id, dst: a, kind: 'axiom' });
+			usedAxioms.add(a);
+		}
+		return {
+			id,
+			label: id,
+			kind: 'theorem',
+			origin: local ? 'local' : 'mathlib',
+			module: local ? null : l.module,
+			statement: l.statement,
+			class_field: !!l.classField,
+			depth: depthOf.get(id)!,
+			truncated: truncated.has(id),
+			ok: true,
+			start_line: local ? 6 : null,
+			end_line: local ? 12 : null,
+			axioms: l.axioms
+		};
+	});
+	for (const a of [...usedAxioms].sort()) {
+		nodes.push({
+			id: a,
+			label: a,
+			kind: 'axiom',
+			origin: 'core',
+			module: a === 'propext' ? 'Init.Core' : 'Init.Prelude',
+			statement: MOCK_AXIOMS[a] ?? null,
+			class_field: false,
+			depth: null,
+			truncated: false,
+			ok: true,
+			start_line: null,
+			end_line: null,
+			axioms: null
+		});
+	}
+	return {
+		ok: true,
+		truncated: truncated.size > 0,
+		roots: order.filter((id) => depthOf.get(id) === 0),
+		nodes,
+		edges,
+		messages: [],
+		notes: [],
+		lean_version: '4.35.0'
+	};
+}
+
+/** The demo graph for GAUSS_LEAN (whatever source is passed). */
+export function mockLemmaGraph(depth = 2): LemmaGraph {
+	return mockGraphFrom([MOCK_ROOT], depth);
+}
+
+export function mockExpandLemmaGraph(names: string[], depth = 2): LemmaGraph {
+	return mockGraphFrom(names, depth);
 }

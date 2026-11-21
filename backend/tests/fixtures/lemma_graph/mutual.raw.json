@@ -1,0 +1,69 @@
+{
+ "params": {
+  "depth": 2,
+  "max_nodes": 40
+ },
+ "meta": {
+  "axioms": [],
+  "lean_version": "4.35.0",
+  "nodes": [
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "even_or_odd_even",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     11,
+     13
+    ],
+    "statement": "∀ (n : ℕ), isEven n ∨ isOdd n",
+    "truncated": false,
+    "uses": [
+     "Or.symm",
+     "even_or_odd_odd"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 0,
+    "direct_axioms": [],
+    "id": "even_or_odd_odd",
+    "kind": "theorem",
+    "local": true,
+    "module": null,
+    "range": [
+     14,
+     16
+    ],
+    "statement": "∀ (n : ℕ), isEven n ∨ isOdd n",
+    "truncated": false,
+    "uses": [
+     "Or.symm",
+     "even_or_odd_even"
+    ]
+   },
+   {
+    "axioms": [],
+    "class_field": false,
+    "depth": 1,
+    "direct_axioms": [],
+    "id": "Or.symm",
+    "kind": "theorem",
+    "local": false,
+    "module": "Init.Core",
+    "range": null,
+    "statement": "∀ {a b : Prop}, a ∨ b → b ∨ a",
+    "truncated": false,
+    "uses": []
+   }
+  ]
+ },
+ "example_meta": null,
+ "messages": [],
+ "tactics": []
+}

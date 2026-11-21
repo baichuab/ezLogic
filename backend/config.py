@@ -44,6 +44,14 @@ class Config:
     OPENROUTER_EXPLAIN_MODEL = os.getenv("OPENROUTER_EXPLAIN_MODEL") or None
     EXPLAIN_TIMEOUT = float(os.getenv("EXPLAIN_TIMEOUT", "60"))
 
+    # Lemma dependency graph (lemma_graph/): how far theorem -> theorem links are
+    # followed into Mathlib by default, and the most a request may ask for.
+    LEMMA_GRAPH_TIMEOUT = float(os.getenv("LEMMA_GRAPH_TIMEOUT", "120"))
+    LEMMA_GRAPH_DEPTH = int(os.getenv("LEMMA_GRAPH_DEPTH", "3"))
+    LEMMA_GRAPH_MAX_NODES = int(os.getenv("LEMMA_GRAPH_MAX_NODES", "300"))
+    LEMMA_GRAPH_DEPTH_LIMIT = int(os.getenv("LEMMA_GRAPH_DEPTH_LIMIT", "8"))
+    LEMMA_GRAPH_NODES_LIMIT = int(os.getenv("LEMMA_GRAPH_NODES_LIMIT", "1500"))
+
     # Sandbox directory the agent is allowed to read/write
     WORKSPACE_DIR = _path("WORKSPACE_DIR", "./workspace")
 

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from agent import AgentResult, ExplainerAgent, ProofAgent, Workspace, WorkspaceError
 from agent import envelope, lean
+import lemma_graph
 from config import Config
 from guest_session import ensure_guest_session
 
@@ -100,6 +101,17 @@ class SnippetRequest(BaseModel):
 
 class FileRequest(BaseModel):
     path: str
+
+
+class LemmaGraphRequest(BaseModel):
+    # The Lean source to graph (e.g. a proof's final Lean). Not needed with `expand`.
+    code: str | None = None
+    # Library theorems to follow further instead (a graph's truncated nodes); the source
+    # is not re-run. Their depths in the result start at 0.
+    expand: list[str] | None = None
+    depth: int | None = None  # default Config.LEMMA_GRAPH_DEPTH, capped server-side
+    max_nodes: int | None = None  # default Config.LEMMA_GRAPH_MAX_NODES, capped server-side
+    include_core: bool = False  # keep plumbing lemmas (congrArg, Eq.mpr, ...) and tactic internals
 
 
 def _user_id(request: Request) -> str:
@@ -363,6 +375,26 @@ async def verify_file(request: FileRequest):
         return (await lean.check_file(workspace, request.path)).to_dict()
     except WorkspaceError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post(
+    "/api/lemma-graph",
+    response_model=lemma_graph.LemmaGraph,
+    dependencies=[Depends(ensure_guest_session)],
+)
+async def build_lemma_graph(body: LemmaGraphRequest):
+    """The directed graph of theorems a Lean source relies on, followed into Mathlib down to
+    the axioms (see lemma_graph/README.md). Nothing is stored; every call re-runs Lean."""
+    opts = dict(depth=body.depth, max_nodes=body.max_nodes, include_core=body.include_core)
+    try:
+        if body.expand:
+            return await lemma_graph.expand_lemma_graph(body.expand[:50], **opts)
+        if not body.code or not body.code.strip():
+            raise HTTPException(status_code=422, detail="Give `code` (Lean source) or `expand`.")
+        return await lemma_graph.build_lemma_graph(body.code, **opts)
+    except lemma_graph.LeanUnavailable as e:
+        log.warning("lemma graph unavailable: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 if __name__ == "__main__":
