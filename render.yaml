@@ -1,0 +1,40 @@
+databases:
+  - name: ezlogic-db
+    databaseName: ezlogic
+    user: postgres
+    postgresMajorVersion: "16"
+    plan: basic-256mb # Adjust plan based on storage/RAM needs
+
+services:
+  - type: web # Use 'pserv' instead if the frontend talks to backend privately without public browser access
+    name: ezlogic-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: pro-plus # Closest plan with 8 GB RAM (matches mem_limit: 8g)
+    disk:
+      name: backend-data
+      mountPath: /data # Mounts /data so both /data/workspace and /data/lean_cache persist
+      sizeGB: 20 # Adjust size as needed
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ezlogic-db
+          property: connectionString
+      # Add variables from ./backend/.env manually or via an Environment Group:
+      # - fromGroup: backend-env
+
+  - type: web
+    name: ezlogic-web
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: starter
+    envVars:
+      - key: DOMAIN
+        value: ":80"
+      - key: BACKEND_URL # Update this key to whatever your frontend uses to reach the backend
+        fromService:
+          type: web
+          name: ezlogic-backend
+          property: hostport
