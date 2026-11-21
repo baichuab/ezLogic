@@ -51,6 +51,11 @@ Tool calls are printed live as the agent runs them.
 | GET | `/api/files/{path}` | Read a workspace file |
 | POST | `/api/verify/file` | Check a workspace file with the lean-interact REPL. Body: `{"path": str}` |
 | POST | `/api/verify/snippet` | Check a snippet with lean-interact. Body: `{"code": str}` |
+| GET | `/{path}` | Only when `STATIC_DIR` holds a frontend build (the hosted image). Serves the built site: real files as they are, any other non-`/api` path gets `index.html` |
+
+Server-sent event streams (`/api/chat`) send an SSE comment (`: ping`) after 15 s without
+an event. A first Mathlib load or a long Lean check can go quiet, and this stops proxies
+from dropping the connection. Clients that only read `data:` lines ignore it.
 
 `POST /api/session` checks the `ezlogic_guest` cookie and reuses the guest ID if
 the JWT is valid. If the cookie is missing or invalid, FastAPI sets a new
@@ -62,6 +67,20 @@ calling the API from a different port on the same hostname should use
 For HTTPS deployments, set `GUEST_COOKIE_SECURE=true` and set `GUEST_JWT_SECRET`
 to a persistent random secret shared by all backend workers. Without a configured
 secret, local sessions expire when the backend process restarts.
+
+## Hosting
+
+The hosted demo (Google Cloud Run, see [`../deploy/README.md`](../deploy/README.md)) runs this
+backend from the root `Dockerfile`.
+
+- **Serving the site.** `STATIC_DIR` (default `backend/static/`, git-ignored) holds the frontend
+  build. When it contains an `index.html`, `main.py` serves the site at the same origin as `/api`.
+  Locally there is no build there, and the Vite dev server serves the frontend as usual.
+- **Startup limit.** A fresh Cloud Run instance reads Mathlib from the image for the first time,
+  which takes about 3 minutes. The deploy therefore sets `LEAN_STARTUP_TIMEOUT=900`; the default
+  of 180 s is only enough locally.
+- **Endpoint exposure.** On a public deployment, `/api/files` and `/api/verify/*` are reachable by
+  anyone with the URL, as they are locally.
 
 ## Proof dependency graphs
 
@@ -120,7 +139,7 @@ depends on sufficient available memory for the backend's configured REPL.
 
 ## Project files
 
-- `main.py` - FastAPI app and routes
+- `main.py` - FastAPI app and routes (plus SSE keep-alives, and serving the built frontend when hosted)
 - `config.py` - Configuration from environment / `.env`
 - `agent/agent.py` - Anthropic tool-calling loop and system prompt
 - `agent/tools.py` - Tool schemas and dispatcher
