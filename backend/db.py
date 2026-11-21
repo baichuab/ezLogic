@@ -10,6 +10,8 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from agent.graph import ProofGraph
+
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 
@@ -37,7 +39,7 @@ def _str(value: UUID | datetime | str) -> str:
 async def init_db() -> None:
     """Create the tables in schema.sql. Safe to run more than once."""
     sql = SCHEMA_PATH.read_text(encoding="utf-8")
-    # psycopg runs one statement per execute. schema.sql is three statements.
+    # Run each idempotent schema statement, including additive migrations.
     statements = [part.strip() for part in sql.split(";") if part.strip()]
     async with await _connect() as conn:
         async with conn.cursor() as cur:
@@ -79,6 +81,7 @@ async def insert_turn(
     query: str,
     response: str,
     messages: list[dict[str, Any]],
+    graph: ProofGraph | None = None,
 ) -> str:
     """Store one build and return its query_id. Both inserts commit together."""
     async with await _connect() as conn:
@@ -94,6 +97,8 @@ async def insert_turn(
             )
             row = await cur.fetchone()
             query_id = row["query_id"]
+            if graph is not None:
+                await _write_graph(conn, query_id, graph)
             # chat_turns is the list for this token and chat. query_id points
             # at the Lean source just inserted.
             await conn.execute(
@@ -104,6 +109,81 @@ async def insert_turn(
                 (user_token, chat_id, query_id),
             )
     return _str(query_id)
+
+
+async def _write_graph(conn, query_id: str | UUID, graph: ProofGraph) -> None:
+    graph = ProofGraph.model_validate(graph.model_dump())
+    async with conn.cursor() as cur:
+        await cur.executemany(
+            """insert into proof_nodes
+                  (query_id, node_id, depends_on_ids, lean_name, statement, kind, proof_dependency_ids)
+               values (%s, %s, %s, %s, %s, %s, %s)""",
+            [(query_id, n.node_id, n.depends_on_ids, n.lean_name, n.statement, n.kind, n.proof_dependency_ids)
+             for n in graph.nodes],
+        )
+    await conn.execute(
+        "update queries set root_node_id = %s where query_id = %s", (graph.root_node_id, query_id)
+    )
+
+
+async def get_graph_source(user_token: str, query_id: str) -> str | None:
+    async with await _connect() as conn:
+        cur = await conn.execute(
+            """select q.response from queries q where q.query_id = %s
+               and exists (select 1 from chat_turns t where t.query_id = q.query_id and t.user_token = %s)""",
+            (query_id, user_token),
+        )
+        row = await cur.fetchone()
+    return row["response"] if row else None
+
+
+async def save_missing_graph(user_token: str, query_id: str, response: str, graph: ProofGraph) -> None:
+    """Attach or upgrade a derived graph if the checked snapshot still matches."""
+    async with await _connect() as conn:
+        cur = await conn.execute(
+            """select q.root_node_id from queries q
+               where q.query_id = %s and q.response = %s
+               and exists (select 1 from chat_turns t where t.query_id = q.query_id and t.user_token = %s)
+               for update of q""",
+            (query_id, response, user_token),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return
+        if row["root_node_id"] is not None:
+            # Read after acquiring the query lock to observe any concurrent upgrade.
+            cur = await conn.execute(
+                "select kind from proof_nodes where query_id = %s and node_id = %s",
+                (query_id, row["root_node_id"]),
+            )
+            root = await cur.fetchone()
+            if root and root["kind"] == "theorem":
+                return
+            await conn.execute("delete from proof_nodes where query_id = %s", (query_id,))
+        await _write_graph(conn, query_id, graph)
+
+
+async def get_graph(user_token: str, query_id: str) -> dict | None:
+    """Return only this guest's immutable saved graph; absent and forbidden are both 404."""
+    async with await _connect() as conn:
+        cur = await conn.execute(
+            """select q.root_node_id, n.node_id, n.depends_on_ids, n.lean_name, n.statement,
+                      n.kind, n.proof_dependency_ids
+               from queries q join proof_nodes n on n.query_id = q.query_id
+               where q.query_id = %s and q.root_node_id is not null
+                 and exists (select 1 from chat_turns t
+                             where t.query_id = q.query_id and t.user_token = %s)
+               order by n.node_id""",
+            (query_id, user_token),
+        )
+        rows = await cur.fetchall()
+    if not rows:
+        return None
+    return {
+        "query_id": query_id,
+        "root_node_id": rows[0]["root_node_id"],
+        "nodes": [{k: v for k, v in row.items() if k != "root_node_id"} for row in rows],
+    }
 
 
 async def list_history(user_token: str, chat_id: str) -> list[dict[str, str]]:

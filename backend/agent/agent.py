@@ -17,6 +17,31 @@ from .workspace import Workspace
 log = logging.getLogger(__name__)
 
 
+def _last_lean_error(trace: list[dict]) -> str:
+    """Report the latest check's actual diagnostics, never an older resolved error."""
+    for call in reversed(trace):
+        if call.get("name") not in ("check_lean_file", "check_lean_snippet"):
+            continue
+        result = call.get("result") or {}
+        if _tool_ok(result):
+            if result.get("proof_candidate") is False:
+                continue
+            return ""
+        parts = [str(result["error"])] if result.get("error") else []
+        for msg in result.get("messages", []):
+            if isinstance(msg, dict) and msg.get("severity") == "error":
+                location = f"Line {msg['line']}: " if msg.get("line") is not None else ""
+                parts.append(location + str(msg.get("message", "")))
+        return "\n".join(parts)[:4000]
+    return ""
+
+
+def _stopped_reply(reason: str, trace: list[dict], reply: str = "") -> str:
+    error = _last_lean_error(trace)
+    text = reply.strip() or f"Stopped: {reason}."
+    return f"{text}\n\nLast Lean error:\n{error}" if error else text
+
+
 def _tool_ok(result: dict) -> bool | None:
     """Pass/fail for a log line, matching how the frontend reads a tool result
     (api.ts's toolSucceeded): `ok` wins when present (Lean checks), else a truthy
@@ -42,8 +67,29 @@ Write Lean 4 only. This is NOT Lean 3: never write `begin ... end`, never separa
 commas, never write a tactic block as `{ ... }`. Tactics are separated by newlines (or `<;>`). \
 Case split with `induction n with | zero => ... | succ k ih => ...`, not `induction n with k hk`.
 
+Lean 4 syntax reminders:
+- Tactics such as `obtain`, `rw`, `exact`, and `ring` must be inside a `by` block.
+- Use newline-separated tactics, never `obtain ... := h,` or `show ..., from ...`.
+- A term-mode let uses `let h := value; body` or a newline, not Lean 3's `let ... in`.
+- Keep number types consistent: use integer identities for Int goals, not Nat lemmas.
+- If you don't know a library name, write the goal as a Lean theorem and try `exact?`
+  or `apply?` so Lean searches for a match. Use `#check` for specific names when helpful.
+  Diagnostic commands such as `#check` and `#eval` do not verify the requested proof.
+
+For example, this is valid Lean 4 tactic syntax:
+theorem example_reorder {P Q : Prop} (h : P ∧ Q) : Q ∧ P := by
+  obtain ⟨hp, hq⟩ := h
+  exact ⟨hq, hp⟩
+
+For prime-number questions, the predicate is Nat.Prime. In this Mathlib version,
+Nat.exists_infinite_primes (n + 1) gives ∃ p, n + 1 ≤ p ∧ Nat.Prime p.
+Destructure this result and prove the requested bound; do not return it unchanged
+when the requested conjunction order or bound is different.
+
 Workflow:
-1. Understand the mathematical statement. Formalise it as a Lean 4 theorem.
+1. Understand the mathematical statement. Formalise it as a Lean 4 theorem named ezlogic_main.
+Use other names for helper lemmas. The final theorem must be named, not an anonymous example,
+so Lean can extract its declaration dependency graph. Do not invent dependency lists.
 2. Write the proof to a .lean file in the workspace (unless the user only wants a snippet).
 3. Verify it with Lean. If there are errors, read them carefully, fix the proof, and re-check. \
 Never claim a proof is verified unless the tool returned ok=true. Never leave `sorry`.
@@ -127,6 +173,8 @@ class ProofAgent:
         turn_start = time.monotonic()
         deadline = turn_start + Config.AGENT_TIMEOUT
         consecutive_failed_checks = 0
+        consecutive_probes = 0
+        prompted_for_proof = False
         LEAN_CHECK_TOOLS = ("check_lean_file", "check_lean_snippet")
 
         for step in range(1, Config.AGENT_MAX_STEPS + 1):
@@ -153,6 +201,17 @@ class ProofAgent:
                         ),
                     }
                 )
+            elif consecutive_probes >= 3 and not prompted_for_proof:
+                prompted_for_proof = True
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Use your next tool call to submit a Lean theorem for the original request. "
+                        "Put the statement in a named theorem and try `exact?` or `apply?` inside "
+                        "its proof if you need to find a library lemma. Stop issuing standalone "
+                        "#check and #eval probes."
+                    ),
+                })
 
             t0 = time.monotonic()
             response = await self.client.chat.completions.create(
@@ -230,7 +289,7 @@ class ProofAgent:
                 )
                 yield {
                     "type": "done",
-                    "reply": content,
+                    "reply": _stopped_reply(give_up_reason, trace, content) if give_up_reason else content,
                     "messages": messages,
                     "tool_calls": trace,
                     "finished": not give_up_reason,
@@ -253,9 +312,14 @@ class ProofAgent:
                 call = {"name": tc["name"], "arguments": args, "result": result}
                 trace.append(call)
                 if tc["name"] in LEAN_CHECK_TOOLS:
-                    consecutive_failed_checks = (
-                        0 if _tool_ok(result) else consecutive_failed_checks + 1
-                    )
+                    probe = result.get("proof_candidate") is False
+                    consecutive_probes = consecutive_probes + 1 if probe else 0
+                    if not _tool_ok(result):
+                        consecutive_failed_checks += 1
+                    elif not probe:
+                        consecutive_failed_checks = 0
+                    if not _tool_ok(result):
+                        log.warning("Lean check failed: %s", _last_lean_error(trace))
                 log.info(
                     "step=%d tool=%s target=%s ok=%s elapsed=%.1fs",
                     step, tc["name"], args.get("path") or (args.get("code", "") or "")[:30] or None,
@@ -276,7 +340,7 @@ class ProofAgent:
         )
         yield {
             "type": "done",
-            "reply": "Stopped: reached the maximum number of agent steps.",
+            "reply": _stopped_reply("reached the maximum number of agent steps", trace),
             "messages": messages,
             "tool_calls": trace,
             "finished": False,

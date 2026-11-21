@@ -17,3 +17,17 @@ create table if not exists chat_turns (
 
 create index if not exists chat_turns_user_idx
   on chat_turns (user_token, chat_id, created_at);
+
+alter table queries add column if not exists root_node_id text;
+
+create table if not exists proof_nodes (
+  query_id uuid not null references queries (query_id) on delete cascade,
+  node_id text not null,
+  depends_on_ids text[],
+  lean_name text not null default '',
+  statement text not null default '',
+  primary key (query_id, node_id)
+);
+
+alter table proof_nodes add column if not exists kind text;
+alter table proof_nodes add column if not exists proof_dependency_ids text[];

@@ -153,10 +153,10 @@ result = await agent.run(text, turns)
 
 `result.reply` is the model's explanation. It is not stored. Walk `result.tool_calls` from last to first:
 
-- For `check_lean_file`, `write_file`, or `edit_file` whose `path` ends in `.lean`, `response` is `workspace.read_file(path)`. Reading the file includes later `edit_file` calls.
-- If the run never touched a `.lean` file and the last Lean call is `check_lean_snippet`, `response` is that call's `code` argument.
+- For `check_lean_file`, `write_file`, or `edit_file` on a `.lean` file, use the latest file that contains a theorem, lemma, or example. Reading the file includes later edits.
+- If no proof file is available, use the latest checked snippet that contains a proof declaration. Standalone `#check` and `#eval` commands remain in the tool trace.
 
-Skip `insert_turn` when `result.finished` is false, or when that walk finds no Lean code.
+Call `insert_turn` only when the writer finishes and Lean accepted the exact source selected for the response. Unverified proof attempts can be shown in the current chat without being cached.
 
 Every request uses the single workspace created in `main.py`. Read the `.lean` file before the request returns. A cache hit returns the stored `response` and does not rewrite the file.
 

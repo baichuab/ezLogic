@@ -1,4 +1,4 @@
-import type { AgentEvent, AssistantMessage, Chat, ProofStep, ToolCall } from './types';
+import type { AgentEvent, AssistantMessage, Chat, ProofStep, ToolCall, ProofGraph } from './types';
 
 export const GAUSS_LEAN = `import Mathlib
 
@@ -105,6 +105,7 @@ With the base case and the inductive step done, induction gives the result for e
 export function gaussProof(id = 'a-gauss'): AssistantMessage {
 	return {
 		id,
+		queryId: 'mock-graph-basic',
 		role: 'assistant',
 		intro: GAUSS_INTRO,
 		lean: GAUSS_LEAN,
@@ -205,7 +206,7 @@ export function mockEvents(userText = ''): MockStep[] {
 			event: {
 				type: 'done',
 				cached: false,
-				query_id: `mock-${Date.now().toString(36)}`,
+				query_id: trimmed.startsWith('/graph ') ? `mock-graph-${trimmed.slice(7).trim()}` : 'mock-graph-basic',
 				response: GAUSS_LEAN,
 				reply: commentary + summary,
 				finished: true,
@@ -214,4 +215,29 @@ export function mockEvents(userText = ''): MockStep[] {
 			delay
 		}
 	];
+}
+
+/** Illustrative fixtures only: these are not dependencies extracted from GAUSS_LEAN. */
+export function mockGraph(queryId: string): ProofGraph | null {
+	const kind = queryId.replace('mock-graph-', '');
+	if (kind === 'missing') return null;
+	if (kind === 'error') throw new Error('Simulated graph request failure. Retry or open another demo.');
+	const graph: ProofGraph = {
+		query_id: queryId, root_node_id: 'A',
+		nodes: [
+			{ node_id: 'A', lean_name: 'A · Main theorem', depends_on_ids: ['B', 'C'], explanation: 'Demo declaration A uses B and C. These edges are illustrative fixture data.' },
+			{ node_id: 'B', lean_name: 'B · Helper lemma', depends_on_ids: ['D'] },
+			{ node_id: 'C', lean_name: 'C · Library result', depends_on_ids: [] },
+			{ node_id: 'D', lean_name: 'D · Supporting lemma', depends_on_ids: [] }
+		]
+	};
+	if (kind === 'shared') graph.nodes[2].depends_on_ids = ['D'];
+	if (kind === 'cycle') graph.nodes[3].depends_on_ids = ['A'];
+	if (kind === 'partial') graph.nodes[3].depends_on_ids = null;
+	if (kind === 'invalid') graph.nodes[3].depends_on_ids = ['missing-node'];
+	if (kind === 'single') graph.nodes = [{ node_id: 'A', depends_on_ids: [] }];
+	graph.nodes = graph.nodes.map((node) => ({
+		...node, kind: 'theorem', proof_dependency_ids: node.depends_on_ids
+	}));
+	return graph;
 }

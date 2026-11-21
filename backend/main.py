@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from agent import AgentResult, ExplainerAgent, ProofAgent, Workspace, WorkspaceError
 from agent import envelope, lean
+from agent.graph import GraphResponse, extract_graph
 from config import Config
 from guest_session import ensure_guest_session
 
@@ -107,8 +108,8 @@ def _user_id(request: Request) -> str:
     return request.state.guest_id
 
 
-def _extract_lean(result: AgentResult) -> str | None:
-    """Lean source produced by this run, per database/README.md."""
+def _extract_lean(result: AgentResult, proof_workspace: Workspace) -> tuple[str | None, str | None]:
+    """Select a proof attempt and its file path, if any. Probes stay in the trace."""
     snippet: str | None = None
     for call in reversed(result.tool_calls):
         name = call.get("name")
@@ -116,14 +117,31 @@ def _extract_lean(result: AgentResult) -> str | None:
         path = args.get("path")
         if name in LEAN_FILE_TOOLS and isinstance(path, str) and path.endswith(".lean"):
             try:
-                return workspace.read_file(path)
+                code = proof_workspace.read_file(path)
             except WorkspaceError:
                 continue
+            if lean.is_proof_candidate(code):
+                return code, path
         if name == "check_lean_snippet" and snippet is None:
             code = args.get("code")
-            if isinstance(code, str) and code.strip():
+            if isinstance(code, str) and lean.is_proof_candidate(code):
                 snippet = code
-    return snippet
+    return snippet, None
+
+
+def _final_source_check(calls: list[dict], code: str, path: str | None) -> dict | None:
+    """Find Lean's latest check of the chosen file or proof snippet."""
+    source_hash = lean.source_hash(code)
+    for call in reversed(calls):
+        arguments = call.get("arguments") or {}
+        if path is not None:
+            matches = call.get("name") == "check_lean_file" and arguments.get("path") == path
+        else:
+            matches = call.get("name") == "check_lean_snippet" and arguments.get("code") == code
+        if matches:
+            checked = call.get("result") or {}
+            return call if checked.get("source_hash") == source_hash else None
+    return None
 
 
 JSON_FENCE = re.compile(r"```json\s*[\s\S]*?```")
@@ -173,7 +191,7 @@ async def start_guest_session() -> None:
     response_class=StreamingResponse,
     dependencies=[Depends(ensure_guest_session)],
 )
-async def chat(body: ChatRequest, request: Request):
+async def chat(body: ChatRequest, request: Request, session_response: Response):
     """Run the proof agent for one user turn, streaming events as SSE.
 
     Each event is a `data: {json}` line. Agent events (`token`,
@@ -211,7 +229,8 @@ async def chat(body: ChatRequest, request: Request):
                             "finished": True,
                             "tool_calls": [],
                         }
-                    )
+                    ),
+                    session_response,
                 )
 
         turns = await db.list_history(user, chat_id)
@@ -239,7 +258,17 @@ async def chat(body: ChatRequest, request: Request):
                     tool_calls=event["tool_calls"],
                     finished=event["finished"],
                 )
-                response = _extract_lean(result)
+                response, lean_file = _extract_lean(result, workspace)
+                check = _final_source_check(result.tool_calls, response, lean_file) if response else None
+                verified = bool(result.finished and check and check["result"].get("ok") is True)
+                attempted_lean = any(
+                    c.get("name") in LEAN_FILE_TOOLS or c.get("name") == "check_lean_snippet"
+                    for c in result.tool_calls
+                )
+                finished = result.finished and (response is not None or not attempted_lean)
+                writer_reply = result.reply
+                if response is None and attempted_lean:
+                    writer_reply = "The writer stopped before submitting a Lean proof. See “How this was checked” for the tool results."
 
                 # Explaining agent: break the final Lean into step cards that
                 # point at line ranges. Runs for unfinished (unverified) runs
@@ -252,9 +281,9 @@ async def chat(body: ChatRequest, request: Request):
                         async for ev in explainer.stream(
                             body.text,
                             response,
-                            writer_reply=result.reply,
-                            tool_calls=result.tool_calls,
-                            finished=result.finished,
+                            writer_reply=writer_reply,
+                            tool_calls=[check] if check else [],
+                            finished=finished,
                             history=turns,
                         ):
                             if ev["type"] == "explanation":
@@ -269,10 +298,17 @@ async def chat(body: ChatRequest, request: Request):
                     )
 
                 query_id: str | None = None
-                if result.finished and response is not None:
+                if verified and response is not None:
+                    # Recheck the exact saved source, then ask Lean for its dependencies.
+                    # A failed extraction leaves the original reply/status intact.
+                    yield _sse({"type": "tool_call_start", "id": "graph", "name": "extract_dependency_graph"})
+                    graph = await extract_graph(response)
+                    yield _sse({"type": "tool_result", "id": "graph", "name": "extract_dependency_graph",
+                                "arguments": {}, "result": {"ok": graph is not None}})
                     query_id = await db.insert_turn(
                         user, chat_id, model, body.text,
                         envelope.encode(response, explanation), result.messages,
+                        graph=graph,
                     )
                 log.info(
                     "chat done chat_id=%s finished=%s saved=%s tool_calls=%d elapsed=%.1fs",
@@ -284,9 +320,11 @@ async def chat(body: ChatRequest, request: Request):
                         "type": "done",
                         "cached": False,
                         "query_id": query_id,
-                        "response": response if response is not None else result.reply,
-                        "reply": _compose_reply(result.reply, explanation),
-                        "finished": result.finished,
+                        "response": response or "",
+                        "reply": _compose_reply(writer_reply, explanation),
+                        "finished": finished,
+                        "verified": verified,
+                        "lean_file": lean_file,
                         "tool_calls": result.tool_calls,
                     }
                 )
@@ -294,7 +332,51 @@ async def chat(body: ChatRequest, request: Request):
             log.exception("chat stream failed chat_id=%s after %.1fs", chat_id, time.monotonic() - t0)
             yield _sse({"type": "error", "detail": f"{type(e).__name__}: {e}"})
 
-    return _stream(events())
+    return _stream(events(), session_response)
+
+
+PROOF_UNAVAILABLE = "This saved proof is unavailable in your guest session. Run the proof again to save it in this session."
+
+
+@app.get("/api/queries/{query_id}/graph", response_model=GraphResponse | None,
+         dependencies=[Depends(ensure_guest_session)])
+async def proof_graph(query_id: UUID, request: Request):
+    user = _user_id(request)
+    key = str(query_id)
+    try:
+        graph = await db.get_graph(user, key)
+        if graph is None and await db.get_graph_source(user, key) is None:
+            raise HTTPException(status_code=404, detail=PROOF_UNAVAILABLE)
+    except (RuntimeError, psycopg.Error):
+        log.exception("Graph database lookup failed")
+        raise HTTPException(status_code=503, detail="Graph database is unavailable")
+    return graph
+
+
+@app.post("/api/queries/{query_id}/graph", response_model=GraphResponse,
+          dependencies=[Depends(ensure_guest_session)])
+async def build_proof_graph(query_id: UUID, request: Request):
+    """Build or upgrade a declaration graph from the saved proof using Lean."""
+    user = _user_id(request)
+    key = str(query_id)
+    try:
+        saved = await db.get_graph(user, key)
+        if saved and GraphResponse.model_validate(saved).has_proof_view:
+            return saved
+        snapshot = await db.get_graph_source(user, key)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail=PROOF_UNAVAILABLE)
+        source, _ = envelope.decode(snapshot)
+        graph = await extract_graph(source)
+        if graph is None:
+            raise HTTPException(status_code=422, detail="Lean could not extract a dependency graph from this saved proof.")
+        await db.save_missing_graph(user, key, snapshot, graph)
+        if saved := await db.get_graph(user, key):
+            return saved
+        raise HTTPException(status_code=409, detail="The saved proof changed while the graph was being built.")
+    except (RuntimeError, psycopg.Error):
+        log.exception("Graph database write failed")
+        raise HTTPException(status_code=503, detail="Graph database is unavailable")
 
 
 @app.get(
@@ -329,12 +411,15 @@ async def _single(event: dict) -> AsyncIterator[str]:
     yield _sse(event)
 
 
-def _stream(body: AsyncIterator[str]) -> StreamingResponse:
-    return StreamingResponse(
+def _stream(body: AsyncIterator[str], session_response: Response) -> StreamingResponse:
+    stream = StreamingResponse(
         body,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+    for cookie in session_response.headers.getlist("set-cookie"):
+        stream.headers.append("set-cookie", cookie)
+    return stream
 
 
 @app.get("/api/files")

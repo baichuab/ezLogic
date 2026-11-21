@@ -51,6 +51,53 @@ npm run preview       # serve the production build locally
 `adapter-auto` is used for now; pick a real adapter before deploying (see
 [the SvelteKit docs](https://svelte.dev/docs/kit/adapters)).
 
+## Declaration dependency graph
+
+Each completed response has a **View dependency graph** button. It opens a graph
+panel beside the conversation (full-screen on small screens). An arrow `A → B`
+means **A depends on B**. Select a declaration to see its formal statement,
+direct dependencies, and incoming references. The declaration dropdown provides
+keyboard navigation. Use the graph controls for zoom/fit, and Close or Escape to
+return to the conversation.
+
+The graph is a read-only view of Lean-extracted declarations, not the explanation
+agent's step cards. Opening it never calls the model or changes verification status.
+Svelte Flow renders the graph and Dagre arranges it. The default view shows the
+root and the theorems or lemmas it uses directly. Select a node to expand its
+branch. **Technical details** shows the underlying Lean declarations. At the
+extraction limit, a node has `null` dependencies and cannot be expanded further.
+
+`getProofGraph` calls `GET /api/queries/{query_id}/graph` using the existing guest
+cookie. It validates the response, caches successful snapshots in memory, and
+cancels or ignores stale requests when the user switches proofs. A `null` result
+means this guest owns the proof and its graph is missing. A 404 tells the user
+the proof is unavailable in the current session. **Build dependency graph** asks Lean to extract a graph from
+the saved source without running the writer. **Update graph** upgrades a graph
+created before Lean supplied theorem and lemma classifications. Unsaved responses
+have no query ID.
+
+The endpoint returns `{query_id, root_node_id, nodes}`; each node has `node_id`
+and `depends_on_ids`, with optional `lean_name`, `statement`, and `explanation`.
+Node IDs are scoped to the query. Metadata-free graphs display the IDs directly.
+All dependency targets must be present, even when their own dependencies are null.
+
+For a frontend-only demo in PowerShell:
+
+```powershell
+$env:VITE_MOCK = '1'
+npm.cmd run dev
+```
+
+The existing demo proof includes the illustrative A/B/C/D graph. Send `/graph shared`,
+`/graph single`, `/graph partial`, `/graph cycle`, `/graph invalid`, `/graph missing`,
+or `/graph error` to exercise other fixtures, then open that response's graph.
+Mock graphs are explicitly labeled as illustrative, not extracted from the demo proof.
+Unset `VITE_MOCK` and restart the dev server to use the backend again.
+
+Graph tests live in `src/lib/graph.test.ts` and `src/lib/api.test.ts`; run them with
+the normal `npm run test` command. See [implementation_plan.md](implementation_plan.md)
+for the implementation breakdown and remaining manual browser checks.
+
 ## Backend contract
 
 The frontend's `src/lib/types.ts` ("Backend wire types" section) and `src/lib/api.ts` mirror the
@@ -63,8 +110,6 @@ is absent. Backend changes should either implement these or let this list be upd
 | # | Assumption | Frontend fallback until it exists |
 | --- | --- | --- |
 | B1 | `POST /api/session` returns `200 {guest_id, expires_at, created}` instead of `204` | Can't tell a known guest from a new one; a chat list (future work) would need to detect an empty history instead |
-| B2 | `done.verified: boolean` on `POST /api/chat`'s final SSE event | Derived from `done.tool_calls` (`api.ts`'s `deriveVerified`): the *last* `check_lean_file` call on the Lean file actually written wins, or the last `check_lean_snippet` call if no file was touched |
-| B3 | `done.lean_file?: string` | The last `.lean` path touched by `write_file`/`edit_file`/`check_lean_file` in `tool_calls` (`extractLeanFile`) |
 | B4 | The agent's prose explanation (`reply`) is stored, so a cache hit's `reply` is the real explanation, and `GET /api/history` turns include it too | When `reply` is missing or equals `response` (true for every cache hit today, since `reply` just duplicates the Lean source), the UI shows a generic "Cached result" / "Lean proof" card with no explanation |
 | B5 | The agent's final reply contains a &#96;&#96;&#96;json &#123;steps, intro?, lean?&#125; block (shape in `fromReply`) | A single "Response" step built from the whole reply, with the first &#96;&#96;&#96;lean&#96;&#96;&#96; fence (if any) as its code |
 | B6 | `tool_call_start.id` is never empty | Matched to its `tool_result` by order instead (oldest still-running call with the same name) |

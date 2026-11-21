@@ -1,6 +1,21 @@
 """Tests for the pure parts of agent/agent.py."""
 
-from agent.agent import _tool_ok
+from agent.agent import _tool_ok, _last_lean_error, _stopped_reply
+
+
+def test_stop_message_includes_actual_latest_diagnostics():
+    trace = [{"name": "check_lean_file", "result": {"ok": False, "messages": [
+        {"severity": "error", "line": 5, "message": "Unknown identifier `obtain`"}
+    ]}}]
+    assert "Line 5: Unknown identifier `obtain`" in _stopped_reply("step limit", trace)
+    assert "UNVERIFIED" in _stopped_reply("failure limit", trace, "UNVERIFIED attempt")
+
+
+def test_successful_recheck_does_not_report_previous_error():
+    trace = [{"name": "check_lean_file", "result": {"ok": False, "error": "old error"}},
+             {"name": "check_lean_file", "result": {"ok": True}}]
+    assert _last_lean_error(trace) == ""
+    assert _stopped_reply("step limit", trace) == "Stopped: step limit."
 
 
 def test_ok_field_wins_even_when_falsy():
