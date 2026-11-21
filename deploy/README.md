@@ -80,7 +80,54 @@ deploy/cloudrun.sh all        # = setup + build + deploy
 
   Anyone with access to the project can read these in the console.
 
-After changing the code, run `deploy/cloudrun.sh build && deploy/cloudrun.sh deploy`.
+After changing the code, follow [Iterating and rolling back](#iterating-and-rolling-back) below.
+`deploy/cloudrun.sh build && deploy/cloudrun.sh deploy` also works, but it sends every visitor to the
+new version at once.
+
+## Iterating and rolling back
+The working demo is frozen as **`demo-baseline-1`**. `deploy/baseline.env` records it, and
+`rollback` returns to it.
+
+| Layer | Baseline | How to get it back |
+| --- | --- | --- |
+| Live service | Cloud Run revision `ezlogic-00002-6tq` (image + settings + environment variables) | `deploy/cloudrun.sh rollback` (traffic in seconds; proofs 3–10 min later if cold) |
+| Image | Artifact Registry tag `ezlogic:demo-baseline-1` (`sha256:e693f805…`) | `IMAGE_TAG=demo-baseline-1 deploy/cloudrun.sh candidate` |
+| Code | git tag `demo-baseline-1` (`b7ed391`, `main` after PR #15) | `git checkout demo-baseline-1` |
+| Database | Cloud SQL backup `demo-baseline-1`, plus daily automatic backups (7 kept) | `gcloud sql backups list --instance ezlogic-db`, then `gcloud sql backups restore <id> --restore-instance ezlogic-db` |
+
+Every new version goes through a test URL before visitors see it:
+```bash
+git checkout -b my-change            # ...edit, commit...
+deploy/cloudrun.sh build             # image tagged with the commit (and `latest`), ~25 min
+deploy/cloudrun.sh candidate         # new revision with NO traffic, at https://candidate---ezlogic-…run.app
+                                     # wait for Mathlib (3–10 min), then try it at that URL
+deploy/cloudrun.sh promote           # all visitors move to it…
+deploy/cloudrun.sh rollback          # …or back to the baseline (or: rollback <revision>)
+deploy/cloudrun.sh revisions         # what serves traffic, the candidate, the baseline, which image each runs
+```
+
+How it works:
+- **Traffic is pinned.** It always goes to a named revision, so nothing moves unless `deploy`,
+  `promote`, `rollback`, `pause` or `resume` moves it.
+- **The traffic switch takes seconds** and needs no rebuild. But a revision with no traffic loses its
+  instance within minutes, so the revision you roll back to usually starts cold. **Proofs then wait
+  3–10 minutes** while Mathlib loads; the page and login work straight away.
+  - Measured: the first load took 3 min on one fresh instance, 8½ min on another, and 6½ min on
+    the baseline after a `promote` → `rollback` test.
+  - On pitch day, avoid needing a rollback: try candidates well before, and leave the version that
+    works alone.
+- **Only the short-lived `candidate` tag is used.** A revision with a traffic tag keeps its warm
+  instance running, and billed, even with no traffic. That's why there is no permanent `baseline`
+  tag, and why `promote` and `rollback` remove `candidate`. While a candidate is up, two instances
+  run, at roughly $0.20–0.25 an hour extra.
+- **New baseline.** When a new version has proven itself, run
+  `deploy/cloudrun.sh mark-baseline demo-baseline-2`. It tags the serving revision's image, backs
+  up the database, tags the git commit and rewrites `deploy/baseline.env`. Then commit and run
+  `git push origin demo-baseline-2`.
+- **Database.** `db.init_db()` only adds missing tables, so old and new code share one database.
+  Before a change to `backend/schema.sql` that the old code couldn't read, run
+  `deploy/cloudrun.sh backup <name>`. Rolling such a change back then also means restoring that
+  backup.
 
 ## Pitch day
 1. `deploy/cloudrun.sh resume`, if you paused it, at least 10 minutes before you start. A new
