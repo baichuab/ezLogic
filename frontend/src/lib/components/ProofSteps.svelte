@@ -10,12 +10,14 @@
 		message,
 		selectedStepId = null,
 		compact = false,
-		onselect
+		onselect,
+		onopengraph
 	}: {
 		message: AssistantMessage;
 		selectedStepId?: string | null;
 		compact?: boolean;
 		onselect: (stepId: string) => void;
+		onopengraph: () => void;
 	} = $props();
 
 	const last = $derived(message.steps.length - 1);
@@ -26,6 +28,9 @@
 <div class="space-y-3">
 	<div class="flex flex-wrap items-center gap-x-3 gap-y-1 {compact ? 'pl-9' : 'pl-11'}">
 		<StatusBadge status={message.status} />
+		{#if message.queryId}
+			<button type="button" data-graph-key={message.id} onclick={onopengraph} class="rounded-full border border-line px-3 py-1 text-xs font-medium text-accent hover:bg-accent-soft">View dependency graph</button>
+		{/if}
 		{#if message.intro && !compact}
 			<p class="text-sm text-ink-2">{message.intro}</p>
 		{/if}

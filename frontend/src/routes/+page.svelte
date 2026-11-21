@@ -24,6 +24,7 @@
 	import ProofSteps from '#lib/components/ProofSteps.svelte';
 	import Sidebar from '#lib/components/Sidebar.svelte';
 	import StepDetail from '#lib/components/StepDetail.svelte';
+	import ProofGraphPanel from '#lib/components/ProofGraphPanel.svelte';
 
 	const STATUS_ANNOUNCE: Record<VerificationStatus, string> = {
 		verified: 'Verified in Lean 4',
@@ -34,7 +35,9 @@
 	// ---- state ---------------------------------------------------------------
 	let chats = $state<Chat[]>(isMockMode ? demoChats() : []);
 	let activeId = $state<string | null>(chats[0]?.id ?? null);
-	let selection = $state<{ messageId: string; stepId: string } | null>(null);
+	type DetailSelection = { kind: 'step'; messageId: string; stepId: string } | { kind: 'graph'; messageId: string } | null;
+	let selection = $state<DetailSelection>(null);
+	let graphTrigger: HTMLElement | null = null;
 	let showLean = $state(false);
 	let sidebarPinned = $state(true);
 	let drawerOpen = $state(false);
@@ -81,26 +84,35 @@
 				) ?? null)
 			: null
 	);
+	const selectedStepId = $derived(selection?.kind === 'step' ? selection.stepId : null);
 	const selectedIndex = $derived(
-		selectedMessage ? selectedMessage.steps.findIndex((s) => s.id === selection!.stepId) : -1
+		selectedMessage && selectedStepId ? selectedMessage.steps.findIndex((s) => s.id === selectedStepId) : -1
 	);
 	const selectedStep = $derived(selectedMessage?.steps[selectedIndex] ?? null);
-	const expanded = $derived(!!selectedStep);
+	const expanded = $derived(!!selectedStep || (selection?.kind === 'graph' && !!selectedMessage));
 	/** The sidebar docks only when no step is expanded (sketch state 3 collapses it to ≡). */
 	const sidebarDocked = $derived(sidebarPinned && !expanded);
 
 	// ---- actions -------------------------------------------------------------
 	function selectStep(messageId: string, stepId: string) {
-		if (selection?.messageId === messageId && selection.stepId === stepId) {
+		if (selection?.kind === 'step' && selection.messageId === messageId && selection.stepId === stepId) {
 			selection = null;
 			return;
 		}
-		selection = { messageId, stepId };
+		selection = { kind: 'step', messageId, stepId };
 		drawerOpen = false;
 	}
 
 	function closeDetail() {
+		const returnFocus = selection?.kind === 'graph' ? graphTrigger : null;
 		selection = null;
+		tick().then(() => returnFocus?.focus());
+	}
+
+	function openGraph(messageId: string) {
+		graphTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		selection = { kind: 'graph', messageId };
+		drawerOpen = false;
 	}
 
 	async function openChat(id: string) {
@@ -299,7 +311,7 @@
 	}
 
 	function measureBrace() {
-		if (!braceEl || !scroller || !selection) return;
+		if (!braceEl || !scroller || selection?.kind !== 'step') return;
 		const card = scroller.querySelector<HTMLElement>(
 			`[data-step-key="${selection.messageId}:${selection.stepId}"]`
 		);
@@ -311,7 +323,7 @@
 
 	// Re-measure when the selection or layout changes; bring the card into view.
 	$effect(() => {
-		if (!selection || !braceEl) return;
+		if (selection?.kind !== 'step' || !braceEl) return;
 		const key = `${selection.messageId}:${selection.stepId}`;
 		tick().then(() => {
 			scroller
@@ -327,18 +339,19 @@
 
 	function onkeydown(e: KeyboardEvent) {
 		const t = e.target as HTMLElement;
-		if (t.closest('textarea, input')) return;
+		if (t.closest('textarea, input, select')) return;
 		if (e.key === 'Escape') {
 			if (drawerOpen) drawerOpen = false;
 			else if (selection) closeDetail();
 			return;
 		}
+		if (t.closest('[data-proof-graph]') || selection?.kind === 'graph') return;
 		if (!selectedMessage || selectedIndex < 0) return;
 		const dir = e.key === 'ArrowDown' || e.key === 'j' ? 1 : e.key === 'ArrowUp' || e.key === 'k' ? -1 : 0;
 		const target = selectedMessage.steps[selectedIndex + dir];
 		if (dir && target) {
 			e.preventDefault();
-			selection = { messageId: selectedMessage.id, stepId: target.id };
+			selection = { kind: 'step', messageId: selectedMessage.id, stepId: target.id };
 		}
 	}
 
@@ -483,8 +496,9 @@
 									<ProofSteps
 										message={msg}
 										compact={expanded}
-										selectedStepId={selection?.messageId === msg.id ? (selection?.stepId ?? null) : null}
+										selectedStepId={selection?.kind === 'step' && selection.messageId === msg.id ? selection.stepId : null}
 										onselect={(stepId) => selectStep(msg.id, stepId)}
+										onopengraph={() => openGraph(msg.id)}
 									/>
 								{/if}
 							{/each}
@@ -521,6 +535,11 @@
 						onclose={closeDetail}
 						onstep={(stepId) => selectStep(selectedMessage.id, stepId)}
 					/>
+				</div>
+			{/if}
+			{#if selection?.kind === 'graph' && selectedMessage}
+				<div class="fixed inset-0 z-30 bg-paper p-3 lg:static lg:z-auto lg:ml-4 lg:min-w-0 lg:flex-1 lg:bg-transparent lg:p-0 lg:pb-2 lg:pt-1">
+					<ProofGraphPanel queryId={selectedMessage.queryId} onclose={closeDetail} />
 				</div>
 			{/if}
 		</div>

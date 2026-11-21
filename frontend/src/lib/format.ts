@@ -95,7 +95,7 @@ export function traceSummary(items: LiveItem[]): string {
 	const tools = items.filter((i): i is Extract<LiveItem, { kind: 'tool' }> => i.kind === 'tool');
 	if (tools.length === 0) return '';
 	const steps = `${tools.length} tool step${tools.length === 1 ? '' : 's'}`;
-	const checks = tools.filter((t) => t.name === 'check_lean_file' || t.name === 'check_lean_snippet');
+	const checks = tools.filter((t) => !t.probe && (t.name === 'check_lean_file' || t.name === 'check_lean_snippet'));
 	const lastCheck = checks.at(-1);
 	if (!lastCheck) return steps;
 	return `${steps} · last Lean check ${lastCheck.state === 'ok' ? 'passed' : 'failed'}`;

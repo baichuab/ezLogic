@@ -1,4 +1,5 @@
-import { mockEvents } from './mock';
+import { mockEvents, mockGraph } from './mock';
+import { parseProofGraph } from './graph';
 import { KIND_LABEL } from './format';
 import type {
 	AgentDoneEvent,
@@ -10,6 +11,7 @@ import type {
 	LeanToolResult,
 	LiveItem,
 	ProofStep,
+	ProofGraph,
 	StepKind,
 	ToolCall,
 	UserMessage
@@ -115,6 +117,37 @@ export function ensureSession(): Promise<void> {
 /** Test-only: clears the remembered session check so the next test starts fresh. */
 export function __resetSessionForTests(): void {
 	sessionPromise = null;
+	graphCache.clear();
+}
+
+const graphCache = new Map<string, ProofGraph>();
+
+/** Read the saved graph, or explicitly ask Lean to build a missing graph. */
+export async function getProofGraph(queryId: string, signal?: AbortSignal, build = false): Promise<ProofGraph | null> {
+	const checkAbort = () => { if (signal?.aborted) throw new ApiError('aborted', 'Request aborted'); };
+	checkAbort();
+	const cached = graphCache.get(queryId);
+	if (cached && !build) return cached;
+	let raw: unknown;
+	if (isMockMode) {
+		await sleep(350, signal);
+		raw = mockGraph(queryId);
+	} else {
+		await ensureSession();
+		checkAbort();
+		raw = await fetchJson<unknown>(`/api/queries/${encodeURIComponent(queryId)}/graph`, {
+			signal,
+			method: build ? 'POST' : 'GET'
+		});
+	}
+	checkAbort();
+	if (raw === null) return null;
+	let graph: ProofGraph;
+	try { graph = parseProofGraph(raw, queryId); }
+	catch (e) { throw new ApiError('protocol', e instanceof Error ? e.message : String(e)); }
+	if (graphCache.size >= 50) graphCache.delete(graphCache.keys().next().value!);
+	graphCache.set(queryId, graph);
+	return graph;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +349,22 @@ function toolTarget(args: Record<string, unknown>): string | undefined {
 	return typeof args.path === 'string' ? args.path : undefined;
 }
 
+export function toolDiagnostic(result: unknown): string | undefined {
+	if (!result || typeof result !== 'object') return undefined;
+	const data = result as Record<string, unknown>;
+	const parts: string[] = [];
+	if (typeof data.error === 'string' && data.error) parts.push(data.error);
+	if (Array.isArray(data.messages)) for (const raw of data.messages) {
+		if (!raw || typeof raw !== 'object') continue;
+		const msg = raw as Record<string, unknown>;
+		if (msg.severity !== 'error' && msg.severity !== 'warning') continue;
+		if (typeof msg.message !== 'string') continue;
+		const location = typeof msg.line === 'number' ? `Line ${msg.line}: ` : '';
+		parts.push(location + msg.message);
+	}
+	return parts.length ? parts.join('\n\n').slice(0, 12000) : undefined;
+}
+
 /** Index of the tool item a `tool_result` event belongs to, or -1 if there isn't one yet. */
 function matchToolIndex(items: LiveItem[], id: string, name: string): number {
 	if (id) {
@@ -361,12 +410,16 @@ export function applyEvent(msg: AssistantMessage, ev: AgentEvent): AssistantMess
 	}
 
 	if (ev.type === 'tool_result') {
+		const diagnostic = toolDiagnostic(ev.result);
+		const probe = !!ev.result && typeof ev.result === 'object' && (ev.result as LeanToolResult).proof_candidate === false;
 		const entry: LiveItem = {
 			kind: 'tool',
 			id: ev.id,
 			name: ev.name,
 			state: toolSucceeded(ev.result) ? 'ok' : 'failed',
-			target: toolTarget(ev.arguments)
+			target: toolTarget(ev.arguments),
+			...(probe && { probe }),
+			...(diagnostic && { diagnostic })
 		};
 		const i = matchToolIndex(live.items, ev.id, ev.name);
 		const items = i === -1 ? [...live.items, entry] : live.items.map((it, idx) => (idx === i ? entry : it));
@@ -541,7 +594,7 @@ export function fromReply(reply: string, finished = true): AssistantMessage {
 /** Build the finished message once a `done` event arrives. */
 export function fromDone(ev: AgentDoneEvent): AssistantMessage {
 	const id = uid('a');
-	const leanFile = ev.lean_file ?? extractLeanFile(ev.tool_calls);
+	const leanFile = ev.lean_file === null ? undefined : ev.lean_file ?? extractLeanFile(ev.tool_calls);
 	const touchedLean = leanFile !== undefined || ev.tool_calls.some((c) => c.name === 'check_lean_snippet');
 	const status = deriveStatus(ev, leanFile);
 
@@ -563,7 +616,7 @@ export function fromDone(ev: AgentDoneEvent): AssistantMessage {
 
 	if (base) {
 		// A cache hit has no tool calls, but its `response` is always the stored Lean.
-		return { ...base, ...common, lean: touchedLean || ev.cached ? ev.response : base.lean };
+		return { ...base, ...common, lean: touchedLean || ev.cached ? ev.response || undefined : base.lean };
 	}
 
 	return {

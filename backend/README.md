@@ -63,7 +63,62 @@ For HTTPS deployments, set `GUEST_COOKIE_SECURE=true` and set `GUEST_JWT_SECRET`
 to a persistent random secret shared by all backend workers. Without a configured
 secret, local sessions expire when the backend process restarts.
 
-## Project Structure
+## Proof dependency graphs
+
+`GET /api/queries/{query_id}/graph` returns `{query_id, root_node_id, nodes}` for
+the current guest's saved graph, or `null` if the guest owns the proof and its
+graph is missing. Unknown queries and queries outside the current guest session
+return the same 404. This endpoint only reads PostgreSQL.
+`POST /api/queries/{query_id}/graph` asks Lean to build a missing graph or upgrade
+one from the older format. It uses the same guest's saved proof and preserves
+the original response. It returns a graph immediately when it already includes
+the theorem and lemma metadata.
+
+On a newly completed writer run, the backend takes the exact final source string,
+rechecks it in Lean, and runs `agent/graph_extract.lean` in the resulting REPL
+environment. The extractor uses `Lean.ConstantInfo.getUsedConstantsAsSet` for
+technical declaration references. The proof view uses `proof_dependency_ids`,
+which Lean obtains from the proof body and restricts to named theorem or lemma
+declarations. Generated helpers and references from the statement are visible
+in the technical view. The source snapshot, query, nodes, and root are saved
+together in one transaction. Graph extraction failures leave the original response
+and verification status intact, with no graph attached.
+
+The writer is instructed to name the final theorem `ezlogic_main` (namespaces are
+allowed). A source with exactly one other named theorem also works. Multiple
+candidate theorems without one unambiguous `ezlogic_main`, anonymous examples,
+Lean errors, `sorry`, and root dependencies on axioms outside `propext`,
+`Classical.choice`, and `Quot.sound` do not produce a graph.
+
+Extraction expands the root and its immediate dependencies, with a maximum of
+512 nodes. Boundary nodes have `depends_on_ids: null`; expanded nodes with no
+references have `[]`. All emitted edges have endpoints in the response. References
+can include definitions, types, constructors, and self/cyclic references, not just
+human-readable lemmas. Old queries are not automatically backfilled.
+
+`schema.sql` adds `queries.root_node_id` and the `proof_nodes` table idempotently
+on backend startup. Node IDs are fully qualified Lean names, unique within each
+query; PostgreSQL stores their dependency lists as `text[]`. Array references are
+validated in the application before committing. Local PostgreSQL works directly;
+Docker is not required.
+
+Tests (from `backend/`):
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+$env:RUN_GRAPH_DB_TESTS = '1'
+.\.venv\Scripts\python.exe -m pytest tests/test_graph_db.py -q
+$env:RUN_LEAN_GRAPH_TESTS = '1'
+$env:LEAN_GRAPH_REPL_DIR = '<path to the built REPL project directory>'
+.\.venv\Scripts\python.exe -m pytest tests/test_graph_lean_integration.py -q
+```
+
+The database test uses the configured database, creates unique disposable test
+records, and removes them afterwards. The real Lean tests use small core-Lean
+proofs and do not call an LLM or load Mathlib. Full Mathlib verification still
+depends on sufficient available memory for the backend's configured REPL.
+
+## Project files
 
 - `main.py` - FastAPI app and routes
 - `config.py` - Configuration from environment / `.env`

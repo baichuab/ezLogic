@@ -28,11 +28,14 @@
 							<span class="text-warn">✗</span>
 						{/if}
 					</span>
-					<span class="text-ink-2">{toolLabel(item.name)}</span>
+					<span class="text-ink-2">{item.probe ? 'Lean diagnostic' : toolLabel(item.name)}</span>
 					{#if item.target}
 						<span class="truncate font-mono text-xs text-muted">{item.target}</span>
 					{/if}
 				</div>
+				{#if item.diagnostic}
+					<pre class="mt-1 ml-6 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-warn/20 bg-warn-soft px-3 py-2 font-mono text-xs text-warn">{item.diagnostic}</pre>
+				{/if}
 			{/if}
 		</li>
 	{/each}

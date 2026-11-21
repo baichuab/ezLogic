@@ -33,6 +33,23 @@ export interface ProofStep {
 
 export type VerificationStatus = 'verified' | 'unverified' | 'failed';
 
+/** Declaration dependencies extracted by Lean, independent of explanation steps. */
+export interface ProofGraphNode {
+	node_id: string;
+	depends_on_ids: string[] | null;
+	kind?: 'theorem' | 'technical' | null;
+	proof_dependency_ids?: string[] | null;
+	lean_name?: string;
+	statement?: string;
+	explanation?: string;
+}
+
+export interface ProofGraph {
+	query_id: string;
+	root_node_id: string;
+	nodes: ProofGraphNode[];
+}
+
 export interface UserMessage {
 	id: string;
 	role: 'user';
@@ -61,6 +78,10 @@ export type LiveItem =
 			name: string;
 			/** Usually the file path the tool acted on, when there is one. */
 			target?: string;
+			/** Actual tool/compiler diagnostics, displayed as escaped plain text. */
+			diagnostic?: string;
+			/** Lean inspected or evaluated code without a proof declaration. */
+			probe?: boolean;
 			state: 'running' | 'ok' | 'failed';
 	  };
 
@@ -129,6 +150,7 @@ export interface LeanToolResult {
 	messages?: unknown[];
 	output?: string;
 	error?: string | null;
+	proof_candidate?: boolean | null;
 }
 
 export interface ToolCall {
@@ -152,10 +174,10 @@ export type AgentEvent =
 			reply: string;
 			finished: boolean;
 			tool_calls: ToolCall[];
-			/** Assumed backend addition (B2): whether the final Lean check passed. */
+			/** Whether Lean accepted the final proof source. Optional on older and cached responses. */
 			verified?: boolean;
-			/** Assumed backend addition (B3): the workspace path of the Lean file produced. */
-			lean_file?: string;
+			/** Path of the final proof file, or null when the response has no proof file. */
+			lean_file?: string | null;
 	  }
 	| { type: 'error'; detail: string };
 

@@ -15,6 +15,7 @@ import shutil
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 
 from config import Config
 
@@ -29,6 +30,8 @@ class LeanResult:
     messages: list[dict] = field(default_factory=list)
     output: str = ""
     error: str | None = None  # tooling failure (Lean missing, timeout, ...)
+    proof_candidate: bool | None = None
+    source_hash: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -53,6 +56,7 @@ _server_lock = threading.Lock()
 
 _mathlib_env: int | None = None
 _env_lock = threading.Lock()
+_operation_lock = threading.RLock()
 
 
 def _is_lake_project() -> bool:
@@ -122,7 +126,7 @@ def _get_base_env(server) -> int | None:
             log.info("loading Mathlib into the REPL (first snippet check; can take ~30-60s)")
             t0 = time.monotonic()
             response = server.run(
-                Command(cmd="import Mathlib"),
+                Command(cmd="import Mathlib\nimport Lean"),
                 timeout=Config.LEAN_STARTUP_TIMEOUT,
                 add_to_session_cache=True,
             )
@@ -159,6 +163,38 @@ _IMPORT_NAMES = re.compile(r"^[ \t]*import\s+(.+)$", re.MULTILINE)
 _BLOCK_COMMENT = re.compile(r"/-.*?-/", re.DOTALL)
 _LINE_COMMENT = re.compile(r"--.*$", re.MULTILINE)
 
+_SOURCE_TOKEN = re.compile(r'--[^\n]*|/-|"(?:\\.|[^"\\])*"', re.DOTALL)
+_COMMENT_DELIMITER = re.compile(r"/-|-/")
+_PROOF_DECLARATION = re.compile(
+    r"^[ \t]*(?:@\[[^\]]*\]\s*|(?:public|private|protected|noncomputable)\s+)*"
+    r"(?:theorem|lemma|example)\s+", re.MULTILINE,
+)
+
+
+def is_proof_candidate(code: str) -> bool:
+    """Recognize declaration attempts even when Lean later rejects their syntax."""
+    spans = []
+    offset = 0
+    while token := _SOURCE_TOKEN.search(code, offset):
+        spans.append(code[offset:token.start()])
+        offset = token.end()
+        if token.group() == "/-":
+            depth = 1
+            for delimiter in _COMMENT_DELIMITER.finditer(code, offset):
+                depth += 1 if delimiter.group() == "/-" else -1
+                if depth == 0:
+                    offset = delimiter.end()
+                    break
+            else:
+                offset = len(code)
+        spans.append(re.sub(r"[^\n]", " ", code[token.start():offset]))
+    spans.append(code[offset:])
+    return bool(_PROOF_DECLARATION.search("".join(spans)))
+
+
+def source_hash(code: str) -> str:
+    return sha256(code.encode("utf-8")).hexdigest()
+
 
 def _unsupported_imports(code: str) -> list[str]:
     """Imported modules the preloaded environment doesn't provide (anything outside
@@ -174,6 +210,11 @@ def _unsupported_imports(code: str) -> list[str]:
 
 
 def _run_in_repl(code: str, label: str) -> LeanResult:
+    with _operation_lock:
+        return _run_in_repl_locked(code, label)
+
+
+def _run_in_repl_locked(code: str, label: str) -> LeanResult:
     """Check `code` in the shared REPL on top of the Mathlib environment. Blocking.
     `label` names the caller in logs (`check_lean_snippet`, `check_lean_file path=...`)."""
     from lean_interact import Command
@@ -243,12 +284,15 @@ async def _check(code: str, label: str) -> LeanResult:
         # the normal per-check case once the REPL is warm. This outer bound is just a
         # safety net for the rare case of the REPL/Mathlib build itself hanging,
         # which isn't covered by that inner timeout.
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             asyncio.to_thread(_run_in_repl, code, label), timeout=Config.LEAN_STARTUP_TIMEOUT
         )
     except asyncio.TimeoutError:
         log.warning("%s exceeded the %.0fs safety timeout", label, Config.LEAN_STARTUP_TIMEOUT)
-        return LeanResult(ok=False, error=f"Lean check timed out after {Config.LEAN_STARTUP_TIMEOUT:.0f}s")
+        result = LeanResult(ok=False, error=f"Lean check timed out after {Config.LEAN_STARTUP_TIMEOUT:.0f}s")
+    result.proof_candidate = is_proof_candidate(code)
+    result.source_hash = source_hash(code)
+    return result
 
 
 async def check_snippet(code: str) -> LeanResult:
@@ -264,6 +308,8 @@ async def check_file(workspace: Workspace, path: str) -> LeanResult:
     if unsupported := _unsupported_imports(code):
         return LeanResult(
             ok=False,
+            proof_candidate=is_proof_candidate(code),
+            source_hash=source_hash(code),
             error=(
                 "check_lean_file only supports imports from Mathlib, Std, Lean and "
                 f"Batteries (already loaded); found: {', '.join(unsupported)}"
@@ -280,4 +326,7 @@ async def warm_up() -> None:
     Lean check will simply try again (and report any error normally)."""
     if not shutil.which(Config.LAKE_PATH):
         return
-    await asyncio.to_thread(lambda: _get_base_env(_get_server()))
+    def start():
+        with _operation_lock:
+            _get_base_env(_get_server())
+    await asyncio.to_thread(start)

@@ -16,9 +16,12 @@ import {
 	fromReply,
 	fromTurn,
 	getHistory,
+	getProofGraph,
 	streamChat,
-	toolSucceeded
+	toolSucceeded,
+	toolDiagnostic
 } from './api';
+import { mockGraph } from './mock';
 import type { AgentDoneEvent, AgentEvent, HistoryTurn, ToolCall } from './types';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +74,80 @@ beforeEach(() => {
 afterEach(() => {
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
+});
+
+describe('tool diagnostics', () => {
+	it('retains a successful evaluation as a diagnostic, with no proof attached', () => {
+		const call = { name: 'check_lean_snippet', arguments: { code: '#eval Nat.factorization 6' }, result: { ok: true, proof_candidate: false } };
+		const draft = applyEvent(emptyLiveMessage('draft'), { type: 'tool_result', id: 'eval', ...call });
+		const response = finalizeLive(draft, {
+			type: 'done', cached: false, query_id: null, response: '',
+			reply: 'The writer stopped before submitting a Lean proof.', finished: false, verified: false,
+			tool_calls: [call], lean_file: null
+		});
+		expect(response.status).toBe('failed');
+		expect(response.lean).toBeUndefined();
+		expect(response.trace?.[0]).toMatchObject({ kind: 'tool', probe: true, state: 'ok' });
+	});
+
+	it('retains compiler errors through the final live trace', () => {
+		const result = { ok: false, messages: [{ severity: 'error', line: 5, message: 'Unknown identifier `obtain`' }] };
+		expect(toolDiagnostic(result)).toBe('Line 5: Unknown identifier `obtain`');
+		const draft = applyEvent(emptyLiveMessage('draft'), { type: 'tool_result', id: 'check', name: 'check_lean_file', arguments: { path: 'proof.lean' }, result });
+		const final = finalizeLive(draft, { type: 'done', cached: false, query_id: null, response: '', reply: 'Stopped', finished: false, tool_calls: [] });
+		expect(final.trace?.[0]).toMatchObject({ state: 'failed', diagnostic: 'Line 5: Unknown identifier `obtain`' });
+	});
+	it('handles tooling failures and ignores info messages and malformed diagnostics', () => {
+		expect(toolDiagnostic({ error: 'MemoryError: unavailable' })).toContain('MemoryError');
+		expect(toolDiagnostic({ ok: true, messages: [{ severity: 'info', message: 'Nat : Type' }, null] })).toBeUndefined();
+	});
+});
+
+describe('saved proof graphs', () => {
+	it('can rebuild an absent graph and cache the recovered result', async () => {
+		const fetcher = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }))
+			.mockResolvedValueOnce(jsonResponse(null))
+			.mockResolvedValueOnce(jsonResponse(mockGraph('q1')));
+		vi.stubGlobal('fetch', fetcher);
+		expect(await getProofGraph('q1')).toBeNull();
+		const graph = await getProofGraph('q1', undefined, true);
+		expect(graph?.query_id).toBe('q1');
+		expect(fetcher.mock.calls[1][1].method).toBe('GET');
+		expect(fetcher.mock.calls[2][1]).toMatchObject({ method: 'POST', credentials: 'include' });
+		expect(await getProofGraph('q1')).toBe(graph);
+	});
+
+	it('includes the guest cookie, uses the query endpoint, and caches successful responses', async () => {
+		const fetcher = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }))
+			.mockResolvedValueOnce(jsonResponse(mockGraph('q1')));
+		vi.stubGlobal('fetch', fetcher);
+		const graph = await getProofGraph('q1');
+		expect(graph?.query_id).toBe('q1');
+		expect(fetcher.mock.calls[1][0]).toBe('/api/queries/q1/graph');
+		expect(fetcher.mock.calls[1][1].credentials).toBe('include');
+		await getProofGraph('q1');
+		expect(fetcher).toHaveBeenCalledTimes(2);
+	});
+	it('does not cache absent graphs and reports retryable server errors', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }))
+			.mockResolvedValueOnce(jsonResponse(null))
+			.mockResolvedValueOnce(jsonResponse({ detail: 'Database unavailable' }, 503)));
+		expect(await getProofGraph('q1')).toBeNull();
+		await expect(getProofGraph('q1')).rejects.toMatchObject({ status: 503 });
+	});
+
+	it('surfaces a saved proof that the current guest cannot access', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }))
+			.mockResolvedValueOnce(jsonResponse({ detail: 'This saved proof is unavailable in your guest session.' }, 404)));
+		await expect(getProofGraph('q1')).rejects.toMatchObject({ status: 404, message: expect.stringContaining('guest session') });
+	});
+	it('rejects malformed data and honors an already aborted request', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }))
+			.mockResolvedValueOnce(jsonResponse(mockGraph('other'))));
+		await expect(getProofGraph('q1')).rejects.toMatchObject({ kind: 'protocol' });
+		const controller = new AbortController(); controller.abort();
+		await expect(getProofGraph('q1', controller.signal)).rejects.toMatchObject({ kind: 'aborted' });
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -659,7 +736,7 @@ describe('applyEvent (live timeline)', () => {
 			arguments: {},
 			result: { error: 'not found' }
 		});
-		expect(msg.live?.items).toEqual([{ kind: 'tool', id: '', name: 'read_file', state: 'failed', target: undefined }]);
+		expect(msg.live?.items).toEqual([{ kind: 'tool', id: '', name: 'read_file', state: 'failed', target: undefined, diagnostic: 'not found' }]);
 	});
 
 	it('does not confuse two concurrent calls with empty ids and different names', () => {
