@@ -1,39 +1,45 @@
 databases:
   - name: ezlogic-db
     databaseName: ezlogic
-    user: postgres
+    user: ezlogic # "postgres" is reserved on Render
     postgresMajorVersion: "16"
-    plan: basic-256mb # Adjust plan based on storage/RAM needs
+    plan: free # Free Postgres expires 30 days after creation (1 GB storage)
 
 services:
-  - type: web # Use 'pserv' instead if the frontend talks to backend privately without public browser access
+  - type: web
     name: ezlogic-backend
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    plan: pro-plus # Closest plan with 8 GB RAM (matches mem_limit: 8g)
-    disk:
-      name: backend-data
-      mountPath: /data # Mounts /data so both /data/workspace and /data/lean_cache persist
-      sizeGB: 20 # Adjust size as needed
+    plan: free # 512 MB RAM, spins down after 15 min idle
+    # Persistent disks aren't available on the free plan; /data is ephemeral
+    # and gets re-seeded from /opt/lean-project by entrypoint.sh on each start.
     envVars:
+      - key: PORT
+        value: "8000"
       - key: DATABASE_URL
         fromDatabase:
           name: ezlogic-db
           property: connectionString
-      # Add variables from ./backend/.env manually or via an Environment Group:
-      # - fromGroup: backend-env
+      - key: OPENROUTER_API_KEY
+        sync: false # Prompted for in the Render Dashboard
+      - key: GUEST_JWT_SECRET
+        generateValue: true
+      - key: GUEST_COOKIE_SECURE
+        value: "true"
 
   - type: web
     name: ezlogic-web
     runtime: docker
     dockerfilePath: ./frontend/Dockerfile
     dockerContext: ./frontend
-    plan: starter
+    plan: free
     envVars:
+      - key: PORT
+        value: "80"
       - key: DOMAIN
         value: ":80"
-      - key: BACKEND_URL # Update this key to whatever your frontend uses to reach the backend
+      - key: BACKEND_URL
         fromService:
           type: web
           name: ezlogic-backend
