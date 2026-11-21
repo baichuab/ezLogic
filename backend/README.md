@@ -7,7 +7,7 @@ FastAPI backend hosting the Lean proof agent.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # set OPENROUTER_API_KEY
+cp .env.example .env   # set ANTHROPIC_API_KEY
 python main.py         # http://localhost:8000, docs at /docs
 ```
 
@@ -34,7 +34,7 @@ Also set `GUEST_JWT_SECRET` in `.env` to a persistent random value, or guest ses
 ```bash
 python -m agent                                  # interactive chat (/files, /reset, /exit)
 python -m agent "prove that 2 + 2 = 4"           # single prompt
-python -m agent --model openai/gpt-4o "..."      # override the OpenRouter model
+python -m agent --model claude-sonnet-5-5 "..."  # override the Anthropic model
 ```
 
 Tool calls are printed live as the agent runs them.
@@ -141,7 +141,7 @@ depends on sufficient available memory for the backend's configured REPL.
 
 - `main.py` - FastAPI app and routes (plus SSE keep-alives, and serving the built frontend when hosted)
 - `config.py` - Configuration from environment / `.env`
-- `agent/agent.py` - OpenRouter tool-calling loop and system prompt
+- `agent/agent.py` - Anthropic tool-calling loop and system prompt
 - `agent/tools.py` - Tool schemas and dispatcher
 - `agent/workspace.py` - Sandboxed file operations (paths cannot escape `WORKSPACE_DIR`)
 - `agent/lean.py` - lean-interact REPL file and snippet checks

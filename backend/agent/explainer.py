@@ -232,15 +232,14 @@ def validate(obj: Any, n_lines: int) -> dict | None:
 
 class ExplainerAgent:
     def __init__(self, model: str | None = None):
-        if not Config.OPENROUTER_API_KEY:
+        if not Config.ANTHROPIC_API_KEY:
             raise RuntimeError(
-                "OPENROUTER_API_KEY is not set (see backend/.env.example)"
+                "ANTHROPIC_API_KEY is not set (see backend/.env.example)"
             )
-        self.model = model or Config.OPENROUTER_EXPLAIN_MODEL or Config.OPENROUTER_MODEL
+        self.model = model or Config.ANTHROPIC_EXPLAIN_MODEL or Config.ANTHROPIC_MODEL
         self.client = AsyncOpenAI(
-            base_url=Config.OPENROUTER_BASE_URL,
-            api_key=Config.OPENROUTER_API_KEY,
-            default_headers={"HTTP-Referer": Config.FRONTEND_URL, "X-Title": "ezLogic"},
+            base_url=Config.ANTHROPIC_BASE_URL,
+            api_key=Config.ANTHROPIC_API_KEY,
             timeout=Config.EXPLAIN_TIMEOUT,
             max_retries=1,
         )

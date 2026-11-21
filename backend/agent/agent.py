@@ -1,4 +1,4 @@
-"""Tool-calling agent loop backed by OpenRouter (OpenAI-compatible API)."""
+"""Tool-calling agent loop backed by Anthropic (via its OpenAI-compatible API)."""
 
 import json
 import logging
@@ -135,16 +135,15 @@ def turns_to_messages(turns: list[dict]) -> list[dict]:
 
 class ProofAgent:
     def __init__(self, workspace: Workspace, model: str | None = None):
-        if not Config.OPENROUTER_API_KEY:
+        if not Config.ANTHROPIC_API_KEY:
             raise RuntimeError(
-                "OPENROUTER_API_KEY is not set (see backend/.env.example)"
+                "ANTHROPIC_API_KEY is not set (see backend/.env.example)"
             )
         self.workspace = workspace
-        self.model = model or Config.OPENROUTER_MODEL
+        self.model = model or Config.ANTHROPIC_MODEL
         self.client = AsyncOpenAI(
-            base_url=Config.OPENROUTER_BASE_URL,
-            api_key=Config.OPENROUTER_API_KEY,
-            default_headers={"HTTP-Referer": Config.FRONTEND_URL, "X-Title": "ezLogic"},
+            base_url=Config.ANTHROPIC_BASE_URL,
+            api_key=Config.ANTHROPIC_API_KEY,
             timeout=Config.LLM_TIMEOUT,
             max_retries=1,
         )
@@ -414,7 +413,7 @@ async def main(argv: list[str] | None = None) -> None:
         "prompt", nargs="*", help="Single prompt to run (omit for interactive mode)"
     )
     parser.add_argument(
-        "--model", help=f"OpenRouter model (default: {Config.OPENROUTER_MODEL})"
+        "--model", help=f"Anthropic model (default: {Config.ANTHROPIC_MODEL})"
     )
     args = parser.parse_args(argv)
 

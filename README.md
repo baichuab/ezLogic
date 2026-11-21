@@ -19,7 +19,7 @@ ezLogic is an intelligent platform that enables mathematicians to write and veri
   `npm install` refuses older versions; with nvm, run `nvm use` in `frontend/` (it reads `.nvmrc`)
 - **Python** (v3.10+) and **pip** (or **uv**) - For the FastAPI backend
 - **Lean 4** via [elan](https://github.com/leanprover/elan) - For proof verification (optional for development; the agent reports proofs as unverified without it)
-- **OpenRouter API key** - The agent calls LLMs through [OpenRouter](https://openrouter.ai)
+- **Anthropic API key** - The agent calls Claude (Haiku 5.5 by default) through the [Anthropic API](https://console.anthropic.com)
 
 #### Installing Lean 4
 
@@ -56,7 +56,7 @@ pip install -r requirements.txt
 # Create backend environment file
 cd backend
 cp .env.example .env
-# Edit .env and set OPENROUTER_API_KEY (and optionally OPENROUTER_MODEL)
+# Edit .env and set ANTHROPIC_API_KEY (and optionally ANTHROPIC_MODEL)
 ```
 
 ### Running the Application
@@ -121,7 +121,7 @@ The docker-compose setup (`docker-compose.yml`, `backend/Dockerfile`, `frontend/
 - **Python FastAPI** - High-performance REST API
 - **Local File System** - Manages Lean project files and proof code
 - **Lean Integration** - Executes Lean commands to verify proofs and collect error messages
-- **AI Agent** - Orchestrates proof writing, verification, and explanation through OpenRouter
+- **AI Agent** - Orchestrates proof writing, verification, and explanation through the Anthropic API
 
 ### Agent Tools
 The agent (`backend/agent/`) runs a tool-calling loop and can only touch files inside the
