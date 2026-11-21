@@ -39,7 +39,10 @@ async def lifespan(_: FastAPI):
     # Best-effort and non-blocking: starts the Lean REPL and preloads Mathlib (if
     # applicable) in the background, so the first chat request isn't the one that
     # pays for it. See agent/lean.py's warm_up().
-    asyncio.create_task(_warm_up_lean())
+    if Config.LEAN_WARMUP:
+        asyncio.create_task(_warm_up_lean())
+    else:
+        log.info("LEAN_WARMUP disabled; Lean REPL will start on first use")
     yield
 
 

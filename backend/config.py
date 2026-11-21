@@ -74,6 +74,10 @@ class Config:
     # 0.95) on a memory-constrained dev machine; keep it lower on a shared/
     # production server where an OOM from a runaway Lean process is the bigger risk.
     LEAN_MAX_TOTAL_MEMORY = float(os.getenv("LEAN_MAX_TOTAL_MEMORY", "0.9"))
+    # Start the Lean REPL and preload Mathlib in the background at startup. Disable
+    # on low-memory hosts (e.g. Render's free tier) so the API can boot without
+    # being OOM-killed; Lean then starts lazily on the first check.
+    LEAN_WARMUP = os.getenv("LEAN_WARMUP", "true").lower() == "true"
 
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
