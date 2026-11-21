@@ -20,14 +20,12 @@ class Config:
     API_TITLE = "ezLogic API"
     API_VERSION = "0.1.0"
 
-    # OpenRouter (OpenAI-compatible API)
-    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_BASE_URL = os.getenv(
-        "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+    # Anthropic, via its OpenAI-compatible endpoint
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+    ANTHROPIC_BASE_URL = os.getenv(
+        "ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/"
     )
-    OPENROUTER_MODEL = os.getenv(
-        "OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free"
-    )
+    ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
     AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "20"))
     # Give up early (asking the model for its best attempt so far, clearly marked
     # unverified) instead of using every one of AGENT_MAX_STEPS on a model that's
@@ -35,13 +33,13 @@ class Config:
     AGENT_MAX_FAILED_CHECKS = int(os.getenv("AGENT_MAX_FAILED_CHECKS", "4"))
     # ... or after this long, whichever comes first.
     AGENT_TIMEOUT = float(os.getenv("AGENT_TIMEOUT", "300"))
-    # Per OpenRouter call. A stuck free-tier model plus the default client retries
-    # could otherwise each silently cost up to a couple of minutes.
+    # Per LLM call. A stuck model plus the default client retries could otherwise
+    # each silently cost up to a couple of minutes.
     LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "90"))
 
     # Explaining agent (agent/explainer.py): turns the writer's final Lean into
     # step cards that point at line ranges. Empty model = same as the writer's.
-    OPENROUTER_EXPLAIN_MODEL = os.getenv("OPENROUTER_EXPLAIN_MODEL") or None
+    ANTHROPIC_EXPLAIN_MODEL = os.getenv("ANTHROPIC_EXPLAIN_MODEL") or None
     EXPLAIN_TIMEOUT = float(os.getenv("EXPLAIN_TIMEOUT", "60"))
 
     # Sandbox directory the agent is allowed to read/write

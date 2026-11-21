@@ -76,7 +76,7 @@ LEAN_FILE_TOOLS = {"check_lean_file", "write_file", "edit_file"}
 class ChatRequest(BaseModel):
     chat_id: UUID
     text: str
-    model: str | None = None  # override OPENROUTER_MODEL
+    model: str | None = None  # override ANTHROPIC_MODEL
     allowBuild: bool = False
 
 
@@ -206,7 +206,7 @@ async def chat(body: ChatRequest, request: Request, session_response: Response):
     """
     user = _user_id(request)
     chat_id = str(body.chat_id)
-    model = body.model or Config.OPENROUTER_MODEL
+    model = body.model or Config.ANTHROPIC_MODEL
     log.info(
         "chat request chat_id=%s user=%s model=%s allowBuild=%s len(text)=%d",
         chat_id, user, model, body.allowBuild, len(body.text),
@@ -277,7 +277,7 @@ async def chat(body: ChatRequest, request: Request, session_response: Response):
                 if response is not None and response.strip():
                     t1 = time.monotonic()
                     try:
-                        explainer = ExplainerAgent(Config.OPENROUTER_EXPLAIN_MODEL or model)
+                        explainer = ExplainerAgent(Config.ANTHROPIC_EXPLAIN_MODEL or model)
                         async for ev in explainer.stream(
                             body.text,
                             response,

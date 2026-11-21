@@ -21,7 +21,7 @@ services:
         fromDatabase:
           name: ezlogic-db
           property: connectionString
-      - key: OPENROUTER_API_KEY
+      - key: ANTHROPIC_API_KEY
         sync: false # Prompted for in the Render Dashboard
       - key: GUEST_JWT_SECRET
         generateValue: true
