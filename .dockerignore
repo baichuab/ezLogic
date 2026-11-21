@@ -1,0 +1,21 @@
+# Build context for the root Dockerfile (hosted demo). Keep it small: the local
+# Mathlib checkout (backend/workspace/.lake) alone is ~7 GB.
+.git
+.github
+.vscode
+https:
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.DS_Store
+backend/workspace
+backend/workspace.lock
+backend/.lean_cache
+backend/static
+backend/.env
+frontend/.svelte-kit
+frontend/build
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
