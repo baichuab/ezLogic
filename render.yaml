@@ -27,6 +27,10 @@ services:
         generateValue: true
       - key: GUEST_COOKIE_SECURE
         value: "true"
+      - key: LEAN_WARMUP
+        value: "false" # Skip Mathlib preload so the API boots in 512 MB; set "true" after upgrading
+      - key: FRONTEND_URL
+        value: https://ezlogic-web.onrender.com # Update if Render assigns a different URL
 
   - type: web
     name: ezlogic-web
@@ -39,8 +43,6 @@ services:
         value: "80"
       - key: DOMAIN
         value: ":80"
+      # Free services can't use Render's private network, so proxy via the public URL.
       - key: BACKEND_URL
-        fromService:
-          type: web
-          name: ezlogic-backend
-          property: hostport
+        value: https://ezlogic-backend.onrender.com # Update if Render assigns a different URL

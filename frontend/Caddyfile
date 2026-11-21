@@ -1,6 +1,9 @@
 {$DOMAIN} {
 	handle /api/* {
-		reverse_proxy backend:8000 {
+		# BACKEND_URL defaults to the docker-compose service; on Render it's the
+		# backend's public https URL (free services have no private network).
+		reverse_proxy {$BACKEND_URL:backend:8000} {
+			header_up Host {upstream_hostport}
 			flush_interval -1
 			transport http {
 				read_timeout 620s
